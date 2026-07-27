@@ -1,0 +1,497 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RegimeFlow — Model Bubble Chart</title>
+<script src="https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js"></script>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  background: #f2f4f7;
+  color: #2c3e50;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 24px 16px 40px;
+}
+
+/* ---- Header ---- */
+.header {
+  text-align: center;
+  margin-bottom: 18px;
+  max-width: 1200px;
+  width: 100%;
+}
+.header h1 {
+  font-size: 22pt;
+  font-weight: 700;
+  margin-bottom: 4px;
+  letter-spacing: -0.3px;
+  color: #1a3348;
+}
+.header .subtitle {
+  font-size: 13pt;
+  color: #6b8299;
+  margin-bottom: 18px;
+}
+
+/* ---- Legend ---- */
+.legend {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 20px;
+  flex-wrap: wrap;
+  font-size: 14pt;
+  color: #4a6078;
+  margin-bottom: 6px;
+}
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.legend-dot {
+  width: 14px; height: 14px;
+  border-radius: 50%;
+  display: inline-block;
+  border: 1px solid rgba(0,0,0,0.06);
+}
+.legend-sep { color: #c4cdd6; font-size: 18pt; font-weight: 300; }
+
+/* ---- Chart Container ---- */
+.chart-wrap {
+  background: #ffffff;
+  border-radius: 16px;
+  border: 1px solid #e4e9ef;
+  box-shadow: 0 2px 16px rgba(0,0,0,0.05);
+  max-width: 1260px;
+  width: 100%;
+  overflow: hidden;
+  position: relative;
+}
+#chart {
+  width: 100%;
+  height: auto;
+  display: block;
+  cursor: grab;
+}
+#chart:active { cursor: grabbing; }
+
+/* ---- Footer hint ---- */
+.footer-hint {
+  margin-top: 16px;
+  font-size: 13pt;
+  color: #8a9fad;
+  text-align: center;
+}
+
+/* ---- Tooltip ---- */
+.bubble-tooltip {
+  position: absolute;
+  pointer-events: none;
+  opacity: 0;
+  background: #fff;
+  color: #2c3e50;
+  padding: 12px 18px;
+  border-radius: 10px;
+  font-size: 13px;
+  line-height: 1.7;
+  border: 1px solid #e0e5ea;
+  box-shadow: 0 4px 24px rgba(0,0,0,0.10);
+  max-width: 360px;
+  z-index: 10;
+  transition: opacity 0.12s;
+}
+
+/* ---- Responsive ---- */
+@media (max-width: 768px) {
+  .header h1 { font-size: 16pt; }
+  .header .subtitle { font-size: 11pt; }
+  .legend { font-size: 11pt; gap: 10px; }
+  .footer-hint { font-size: 11pt; }
+}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>🧬 RegimeFlow — 模型气泡图</h1>
+  <p class="subtitle">17 个时序预测模型 · 按家族分组 · 点击深入探索 · 点击空白返回</p>
+  <div class="legend">
+    <span class="legend-item"><span class="legend-dot" style="background:#7BA8C8"></span>流匹配</span>
+    <span class="legend-item"><span class="legend-dot" style="background:#8DBFB4"></span>扩散模型</span>
+    <span class="legend-item"><span class="legend-dot" style="background:#9DA8CC"></span>Transformer</span>
+    <span class="legend-item"><span class="legend-dot" style="background:#BFA0C4"></span>MLP-Mixer</span>
+    <span class="legend-item"><span class="legend-dot" style="background:#D4AD8A"></span>线性模型</span>
+    <span class="legend-item"><span class="legend-dot" style="background:#8CB88C"></span>Mamba/SSM</span>
+    <span class="legend-sep">|</span>
+    <span class="legend-item"><span class="legend-dot" style="background:#CCB882"></span>零样本</span>
+    <span class="legend-sep">|</span>
+    <span>泡泡大小 ≈ 模型容量 (hidden_dim)</span>
+  </div>
+</div>
+
+<div class="chart-wrap" id="chart-wrap">
+  <div id="chart"></div>
+</div>
+
+<p class="footer-hint">🖱 点击气泡放大  ·  点击空白返回  ·  滚轮缩放  ·  拖拽平移  ·  悬停查看详情</p>
+
+<script>
+// =====================================================================
+// 模型数据 (内嵌)
+// =====================================================================
+var models = [
+  { id:"RegimeFlow",       name:"RegimeFlow",               family:"Flow Matching", type:"probabilistic", hidden_dim:96,  layers:4,  lr:"8e-4", context_len:96, pred_len:256, features:["Regime-aware prior","单步采样","条件流匹配","跨系统泛化"], paper_metrics:{MAE:"↓31%", CRPS:"↑17%"}, description:"Regime-aware flow matching，使用 BLR 先验分布替代标准高斯源分布。" },
+  { id:"TSFlow_PE",        name:"TSFlow + PE",              family:"Flow Matching", type:"probabilistic", hidden_dim:256, layers:4,  lr:"8e-4", context_len:96, pred_len:256, features:["S4 backbone","PE kernel","16步采样"], paper_metrics:{}, description:"TSFlow 基线，周期性嵌入核函数作为先验分布。" },
+  { id:"TSFlow_PE_regime", name:"TSFlow + PE + Regime",     family:"Flow Matching", type:"probabilistic", hidden_dim:256, layers:4,  lr:"8e-4", context_len:96, pred_len:256, features:["S4 backbone","PE + regime","条件增强"], paper_metrics:{}, description:"TSFlow 的 regime-aware 变体。" },
+  { id:"CSDI_regime",      name:"CSDI + Regime",            family:"Diffusion",     type:"probabilistic", hidden_dim:64,  layers:4,  lr:"1e-3", context_len:96, pred_len:256, features:["Score-based diffusion","50步采样","Transformer"], paper_metrics:{}, description:"CSDI 的 regime-aware 变体，50 步扩散去噪。" },
+  { id:"TSDiff_regime",    name:"TSDiff + Regime",          family:"Diffusion",     type:"probabilistic", hidden_dim:128, layers:6,  lr:"1e-4", context_len:96, pred_len:256, features:["Denoising diffusion","100步采样","S4 backbone"], paper_metrics:{}, description:"TSDiff 的 regime-aware 变体，100 步扩散。" },
+  { id:"iTransformer",     name:"iTransformer",             family:"Transformer",   type:"point",         hidden_dim:512, layers:3,  lr:"2e-4", context_len:96, pred_len:256, features:["Inverted attention","变量维度","Channel independence"], paper_metrics:{}, description:"Inverted Transformer，对变量维度做 self-attention。" },
+  { id:"PatchTST",         name:"PatchTST",                 family:"Transformer",   type:"point",         hidden_dim:512, layers:2,  lr:"2e-4", context_len:96, pred_len:256, features:["Patch-based","Channel independence","子序列级注意力"], paper_metrics:{}, description:"将时间序列分割为 patch 后做 self-attention。" },
+  { id:"TimeXer",          name:"TimeXer",                  family:"Transformer",   type:"point",         hidden_dim:512, layers:4,  lr:"1e-4", context_len:96, pred_len:256, features:["Patch Transformer","外部协变量","细粒度patch"], paper_metrics:{}, description:"结合 patch 机制和外部协变量建模。" },
+  { id:"NSformer",         name:"NSformer",                 family:"Transformer",   type:"point",         hidden_dim:256, layers:2,  lr:"2e-4", context_len:96, pred_len:256, features:["De-stationary Attention","Series Stationarization"], paper_metrics:{}, description:"非平稳 Transformer，De-stationary Attention 机制。" },
+  { id:"TimeMixer",        name:"TimeMixer",                family:"MLP-Mixer",     type:"point",         hidden_dim:16,  layers:3,  lr:"2e-4", context_len:96, pred_len:256, features:["多尺度降采样","MLP-Mixer","轻量级"], paper_metrics:{}, description:"多尺度时序混合器，MLP-Mixer 架构跨尺度融合。" },
+  { id:"DLinear",          name:"DLinear",                  family:"Linear",        type:"point",         hidden_dim:512, layers:1,  lr:"1e-3", context_len:96, pred_len:256, features:["趋势-季节分解","单层线性","极简架构"], paper_metrics:{}, description:"将时序分解为趋势和季节分量后分别线性预测。" },
+  { id:"S_Mamba",          name:"S-Mamba",                  family:"Mamba",         type:"point",         hidden_dim:256, layers:4,  lr:"1e-4", context_len:96, pred_len:256, features:["State space model","选择性扫描","线性复杂度"], paper_metrics:{}, description:"Mamba 用于时序预测，选择性扫描机制。" },
+  { id:"BiMamba4TS",       name:"BiMamba4TS",               family:"Mamba",         type:"point",         hidden_dim:256, layers:4,  lr:"1e-4", context_len:96, pred_len:256, features:["双向Mamba","Patch机制","双向依赖建模"], paper_metrics:{}, description:"双向 Mamba + patch 机制，sincos 位置编码。" },
+  { id:"Chronos",          name:"Chronos",                  family:"Zero-shot",     type:"zero-shot",     hidden_dim:0,   layers:0,  lr:"N/A", context_len:96, pred_len:256, features:["零样本预测","T5 backbone","时序tokenization"], paper_metrics:{}, description:"Amazon Chronos，预训练零样本时序预测模型。" }
+];
+
+// =====================================================================
+// Visualization config
+// =====================================================================
+var familyDefs = [
+  { key:"Flow Matching", color:"#7BA8C8", icon:"🌊" },
+  { key:"Diffusion",     color:"#8DBFB4", icon:"🌫️" },
+  { key:"Transformer",   color:"#9DA8CC", icon:"⚡" },
+  { key:"MLP-Mixer",     color:"#BFA0C4", icon:"🧪" },
+  { key:"Linear",        color:"#D4AD8A", icon:"📏" },
+  { key:"Mamba",         color:"#8CB88C", icon:"🐍" },
+  { key:"Zero-shot",     color:"#CCB882", icon:"🎯" }
+];
+
+var familyMeta = {};
+familyDefs.forEach(function(d) { familyMeta[d.key] = d; });
+
+var families = familyDefs.map(function(d) { return d.key; });
+
+var color = d3.scaleOrdinal()
+  .domain(families)
+  .range(familyDefs.map(function(d) { return d.color; }));
+
+// =====================================================================
+// Hierarchy data
+// =====================================================================
+var hierarchyData = {
+  name: "Models",
+  children: families.map(function(fam) {
+    var children = models
+      .filter(function(m) { return m.family === fam; })
+      .map(function(m) {
+        return {
+          name:      m.name,
+          fullName:  m.name,
+          value:     m.hidden_dim > 0 ? Math.max(200, m.hidden_dim) : 200,
+          model:     m
+        };
+      });
+    return { name: fam, children: children };
+  }).filter(function(f) { return f.children.length > 0; })
+};
+
+// =====================================================================
+// D3 Pack layout — dynamic sizing
+// =====================================================================
+var container  = document.getElementById("chart");
+var chartWrap  = document.getElementById("chart-wrap");
+var W = Math.max(1200, chartWrap.clientWidth);
+var H = 820;
+
+var pack = d3.pack()
+  .size([W, H])
+  .padding(14);
+
+var root = pack(d3.hierarchy(hierarchyData)
+  .sum(function(d) { return d.value; })
+  .sort(function(a, b) { return b.value - a.value; }));
+
+// =====================================================================
+// SVG
+// =====================================================================
+var svg = d3.select("#chart")
+  .append("svg")
+    .attr("viewBox", "0 0 " + W + " " + H)
+    .attr("width", W)
+    .attr("height", H)
+    .attr("style", "max-width:100%;height:auto;display:block;background:#fafbfc;");
+
+// Background
+svg.append("rect")
+  .attr("width", W).attr("height", H)
+  .attr("fill", "#fafbfc").attr("rx", 12);
+
+// =====================================================================
+// Tooltip
+// =====================================================================
+var tooltip = d3.select("#chart-wrap")
+  .append("div")
+    .attr("class", "bubble-tooltip");
+
+// =====================================================================
+// Node groups
+// =====================================================================
+var gNode  = svg.append("g");
+var gLabel = svg.append("g")
+    .attr("pointer-events", "none")
+    .attr("text-anchor", "middle");
+
+var node = gNode.selectAll("circle")
+  .data(root.descendants().slice(1))
+  .join("circle")
+    .attr("cx", function(d) { return d.x; })
+    .attr("cy", function(d) { return d.y; })
+    .attr("r",  function(d) { return d.r; })
+    .attr("fill", function(d) {
+      if (d.children) {
+        // 外层家族圆 — 极浅半透明"蛋清"
+        var fc = d3.color(color(d.data.name));
+        if (fc) { fc.opacity = 0.16; return fc + ""; }
+        return "rgba(180,190,200,0.18)";
+      } else {
+        // 内层模型圆 — 实心高饱和"蛋黄"
+        return color(d.parent.data.name);
+      }
+    })
+    .attr("stroke", function(d) {
+      if (d.children) {
+        var fc = d3.color(color(d.data.name));
+        if (fc) { fc.opacity = 0.32; return fc + ""; }
+        return "rgba(150,160,170,0.28)";
+      } else {
+        // ★ 白色描边 2.5px → 隔离效应
+        return "#ffffff";
+      }
+    })
+    .attr("stroke-width", function(d) { return d.children ? 1.5 : 2.5; })
+    .attr("cursor", "pointer")
+    .attr("style", "transition: stroke 0.15s;")
+    // ---- hover ----
+    .on("mouseover", function(event, d) {
+      d3.select(this).attr("stroke", "#3a5f7c").attr("stroke-width", 2.5);
+
+      if (!d.children && d.data.model) {
+        var m = d.data.model;
+        var famInfo = familyMeta[m.family] || {};
+        var met = "";
+        if (m.paper_metrics && Object.keys(m.paper_metrics).length > 0) {
+          met = "<br/>" + Object.entries(m.paper_metrics)
+            .map(function(kv) { return "📊 " + kv[0] + ": <b>" + kv[1] + "</b>"; })
+            .join("&nbsp;&nbsp;");
+        }
+        tooltip.style("opacity", 1).html(
+          '<b style="font-size:15px;color:#1a3a4a;">' + m.name + '</b><br/>' +
+          '<span style="color:#5a7a90;">' + (famInfo.icon||"") + ' ' + m.family + ' · ' +
+            (m.type==="probabilistic"?"概率预测": m.type==="point"?"点预测":"零样本") +
+          '</span><br/>' +
+          (m.hidden_dim > 0
+            ? '📐 hidden_dim=' + m.hidden_dim + ', layers=' + m.layers + '<br/>'
+            : '🧠 预训练模型 (T5)<br/>') +
+          '⚙ lr=' + m.lr + ', ctx=' + m.context_len + '→pred=' + m.pred_len +
+          met +
+          '<br/><span style="color:#9aafc0;font-size:11px;">🖱 点击查看详情</span>'
+        );
+      } else if (d.children) {
+        var fi = familyMeta[d.data.name] || {};
+        tooltip.style("opacity", 1).html(
+          '<b style="font-size:14px;color:#1a3a4a;">' + (fi.icon||"") + ' ' + d.data.name + '</b><br/>' +
+          '<span style="color:#7a94a6;font-size:12px;">' + d.children.length + ' 个模型 · 点击深入探索</span>'
+        );
+      }
+    })
+    .on("mousemove", function(event) {
+      var rect = chartWrap.getBoundingClientRect();
+      var tx = event.clientX - rect.left + 16;
+      var ty = event.clientY - rect.top - 8;
+      if (tx + 370 > rect.width)  tx = event.clientX - rect.left - 370;
+      if (ty < 4) ty = 4;
+      tooltip.style("left", tx + "px").style("top", ty + "px");
+    })
+    .on("mouseout", function() {
+      d3.select(this)
+        .attr("stroke", function(d) {
+          if (d.children) {
+            var fc = d3.color(color(d.data.name));
+            if (fc) { fc.opacity = 0.32; return fc + ""; }
+            return "rgba(150,160,170,0.28)";
+          }
+          return "#ffffff";
+        })
+        .attr("stroke-width", function(d) { return d.children ? 1.5 : 2.5; });
+      tooltip.style("opacity", 0);
+    })
+    // ---- click leaf → alert detail ----
+    .on("click", function(event, d) {
+      event.stopPropagation();
+      if (!d.children && d.data.model) {
+        var m = d.data.model;
+        var featTags = (m.features||[]).map(function(f){ return "▸ "+f; }).join("\n");
+        alert(
+          "📦 " + m.name + "\n" +
+          "━━━━━━━━━━━━━━━━━━━━\n" +
+          "家族: " + m.family + "\n" +
+          "类型: " + (m.type==="probabilistic"?"概率预测": m.type==="point"?"点预测":"零样本") + "\n" +
+          (m.hidden_dim>0 ? "hidden_dim: " + m.hidden_dim + "  layers: " + m.layers + "\n" : "预训练: amazon/chronos-bolt-base\n") +
+          "lr: " + m.lr + "  ctx: " + m.context_len + "  pred: " + m.pred_len + "\n" +
+          (m.paper_metrics && Object.keys(m.paper_metrics).length>0
+            ? Object.entries(m.paper_metrics).map(function(kv){ return kv[0]+": "+kv[1]; }).join("  ") + "\n": "") +
+          "━━━━━━━━━━━━━━━━━━━━\n" +
+          "特点:\n" + featTags + "\n\n" +
+          m.description
+        );
+      } else if (d.children) {
+        zoomToNode(d);
+      }
+    });
+
+// =====================================================================
+// Labels
+// =====================================================================
+var label = gLabel.selectAll("text")
+  .data(root.descendants())
+  .join("text")
+    .attr("x", function(d) { return d.x; })
+    .attr("y", function(d) { return d.y; })
+    .text(function(d) { return d.data.name; })
+    .style("fill-opacity", function(d) { return 1; })
+    .style("display",       function(d) { return "inline"; })
+    .attr("fill", "#1a1a2e")
+    .style("font-weight", "bold")
+    .style("font-size", function(d) { return d.parent === root ? "13pt" : "11pt"; })
+    .style("font-family", '-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif')
+    .style("paint-order", "stroke")
+    .style("stroke", "white")
+    .style("stroke-width", function(d) { return d.parent === root ? "3.5px" : "3px"; })
+    .style("stroke-linecap", "round")
+    .style("stroke-linejoin", "round");
+
+// =====================================================================
+// Hint text at bottom
+// =====================================================================
+svg.append("text")
+  .attr("x", W / 2).attr("y", H - 16)
+  .attr("text-anchor", "middle")
+  .attr("fill", "#a0b4c4")
+  .style("font-size", "11pt")
+  .style("font-family", '-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif')
+  .style("pointer-events", "none")
+  .text("点击气泡放大  ·  点击空白返回  ·  滚轮缩放  ·  拖拽平移  ·  悬停查看详情");
+
+// =====================================================================
+// Zoom & Pan — D3 zoom behavior
+// =====================================================================
+var focus = root;
+
+// Current view state: what point is at the center, and at what scale
+var view = { x: W / 2, y: H / 2, k: 1, targetK: 1, targetX: W/2, targetY: H/2 };
+
+function applyView() {
+  var tx = W / 2 - view.x * view.k;
+  var ty = H / 2 - view.y * view.k;
+  var t  = "translate(" + tx + "," + ty + ") scale(" + view.k + ")";
+  gNode.attr("transform", t);
+  gLabel.attr("transform", t);
+}
+
+applyView();
+
+var d3Zoom = d3.zoom()
+  .scaleExtent([0.5, 20])
+  .on("zoom", function(event) {
+    // event.transform: {x, y, k}
+    // We need to map this to our view state
+    // D3 zoom transform maps screen coords to data coords:
+    //   dataX = (screenX - event.transform.x) / event.transform.k
+    // We want:   screenX = dataX * view.k + tx
+    // Our transform: screenX = dataX * view.k + (W/2 - view.x * view.k)
+    //             = dataX * view.k + W/2 - view.x * view.k
+    // Comparing with d3 zoom: screenX = dataX * event.transform.k + event.transform.x
+    // So:  event.transform.k = view.k
+    //      event.transform.x = W/2 - view.x * view.k
+    // Reverse: view.k = event.transform.k
+    //          view.x = (W/2 - event.transform.x) / event.transform.k
+
+    view.k = event.transform.k;
+    view.x = (W / 2 - event.transform.x) / view.k;
+    view.y = (H / 2 - event.transform.y) / view.k;
+    applyView();
+  });
+
+svg.call(d3Zoom);
+
+// =====================================================================
+// Click-to-zoom into a node
+// =====================================================================
+function zoomToNode(d) {
+  focus = d;
+  var targetK = Math.min(W, H) / (d.r * 2.3);
+  if (d === root) targetK = 1;
+
+  var startX = view.x, startY = view.y, startK = view.k;
+
+  // Update D3 zoom transform so pan/scroll stays consistent
+  svg.transition().duration(500).tween("zoom", function() {
+    var ix = d3.interpolate(startX, d.x);
+    var iy = d3.interpolate(startY, d.y);
+    var ik = d3.interpolate(startK, targetK);
+    return function(t) {
+      var vx = ix(t), vy = iy(t), vk = ik(t);
+      view.x = vx; view.y = vy; view.k = vk;
+      applyView();
+      // Sync D3 zoom state
+      svg.property("__zoom", d3.zoomIdentity
+        .translate(W/2 - vx*vk, H/2 - vy*vk)
+        .scale(vk));
+    };
+  });
+
+  // Label visibility
+  label
+    .filter(function(d) { return d.parent === focus || this.style.display === "inline"; })
+    .transition().duration(500)
+      .style("fill-opacity", function(d) { return d.parent === focus ? 1 : 0; })
+      .attr("fill", function(d) { return d.children ? "#2c3e50" : "#3a5068"; })
+      .style("font-size", function(d) { return d.children ? "13pt" : "12pt"; })
+      .style("font-weight", function(d) { return d.children ? 600 : 500; })
+      .on("start", function(d) { if (d.parent === focus) this.style.display = "inline"; })
+      .on("end",   function(d) { if (d.parent !== focus) this.style.display = "none"; });
+}
+
+// =====================================================================
+// Click background → zoom back to root
+// =====================================================================
+svg.on("click", function(event) {
+  // Only zoom out if we clicked the background (not a circle)
+  if (event.target === svg.node() || event.target.tagName === "rect") {
+    if (focus !== root) zoomToNode(root);
+  }
+});
+
+// =====================================================================
+// Resize — recalculate pack and redraw
+// =====================================================================
+var resizeTimeout;
+window.addEventListener("resize", function() {
+  clearTimeout(resizeTimeout);
+  resizeTimeout = setTimeout(function() {
+    location.reload();
+  }, 400);
+});
+</script>
+
+</body>
+</html>

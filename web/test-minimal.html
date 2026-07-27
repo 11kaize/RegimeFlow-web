@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><title>Minimal D3 Test</title>
+<script src="https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js"></script>
+<style>body{background:#0f1923;margin:40px;}</style></head><body>
+<div id="msg" style="color:#fff;font-size:20px;">Loading...</div>
+<div id="chart"></div>
+<script>
+var el = document.getElementById('msg');
+el.textContent = 'D3 loaded: ' + (typeof d3 !== 'undefined');
+
+// 用内嵌数据画最简单的泡泡图
+var data = {
+  name: "Test",
+  children: [
+    {name:"A", children:[{name:"a1",value:50},{name:"a2",value:80}]},
+    {name:"B", children:[{name:"b1",value:60},{name:"b2",value:40}]}
+  ]
+};
+
+var pack = d3.pack().size([600,400]).padding(10);
+var root = pack(d3.hierarchy(data).sum(function(d){return d.value;}));
+
+var svg = d3.select('#chart').append('svg')
+  .attr('viewBox','0 0 600 400').attr('width',600).attr('height',400)
+  .style('background','#1a1a2e');
+
+svg.selectAll('circle').data(root.descendants().slice(1)).join('circle')
+  .attr('cx',function(d){return d.x;})
+  .attr('cy',function(d){return d.y;})
+  .attr('r',function(d){return d.r;})
+  .attr('fill',function(d){return d.children?'#5B9BD5':'#fff';})
+  .attr('stroke','#fff').attr('stroke-width',1);
+
+svg.selectAll('text').data(root.descendants()).join('text')
+  .attr('x',function(d){return d.x;})
+  .attr('y',function(d){return d.y;})
+  .attr('text-anchor','middle')
+  .attr('fill','#fff')
+  .style('font-size','14px')
+  .text(function(d){return d.data.name;});
+
+el.textContent += ' | Rendered!';
+</script>
+</body></html>

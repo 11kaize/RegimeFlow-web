@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><title>Test</title>
+<script src="https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js"></script>
+<style>
+body { background:#0f1923; margin:0; padding:20px; }
+#chart { width:100%; height:80vh; }
+</style></head><body>
+<div id="chart"></div>
+<script src="data/bio-models.js"></script>
+<script>var t = function(k) { return k; };</script>
+<script src="js/bubble-chart.js"></script>
+<script>
+console.log('Bio data:', BIO_MODELS_DATA.length, 'systems');
+initBubbleChart(BIO_MODELS_DATA, 'bio');
+</script>
+</body></html>

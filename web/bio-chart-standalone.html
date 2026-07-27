@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SysBio-Traj — 1,050 Biological Systems</title>
+<script src="https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js"></script>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#0f1923;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",sans-serif;color:#e0e6ed;min-height:100vh;display:flex;flex-direction:column;align-items:center;padding:24px 16px}
+h1{font-size:22px;font-weight:800;color:#e8e8f0;margin-bottom:4px;text-align:center}
+.sub{font-size:14px;color:#8899aa;margin-bottom:16px;text-align:center}
+#chart-wrap{width:100%;max-width:1200px;background:transparent;position:relative}
+#chart{width:100%;height:75vh;min-height:500px}
+.tt{position:absolute;pointer-events:none;opacity:0;background:#1a2a3a;color:#e0e6ed;padding:10px 16px;border-radius:10px;font-size:13px;line-height:1.6;border:1px solid #2a4057;box-shadow:0 4px 20px rgba(0,0,0,0.5);max-width:340px;z-index:10;transition:opacity .12s}
+.leg{display:flex;justify-content:center;gap:16px;flex-wrap:wrap;margin-top:12px;font-size:12px;color:#8899aa}
+.leg-item{display:flex;align-items:center;gap:5px}
+.leg-dot{width:11px;height:11px;border-radius:50%}
+@media(max-width:768px){h1{font-size:17px}#chart{height:50vh;min-height:360px}}
+</style>
+</head>
+<body>
+<h1>面向 1000+ 生物系统的跨系统轨迹预测框架</h1>
+<p class="sub">73 个采样系统 · 按 Regime 类型分组 · 点击放大 · 悬停查看详情</p>
+<div id="chart-wrap"><div id="chart"></div></div>
+<div class="leg" id="legend"></div>
+
+<script>
+// ============ DATA ============
+var models = [
+{id:"BIOMD0000000144",name:"Calzone2007",reg:"oscillation",sp:17},{id:"BIOMD0000000584",name:"Mandlik2015",reg:"directly_stable",sp:21},{id:"BIOMD0000000312",name:"Tyson2003",reg:"oscillation",sp:2},{id:"BIOMD0000000790",name:"Alvarez2019",reg:"dec_stable",sp:4},{id:"BIOMD0000000294",name:"Restif2007",reg:"directly_stable",sp:11},{id:"BIOMD0000000238",name:"Overgaard2007",reg:"directly_stable",sp:3},{id:"BIOMD0000000924",name:"Smith2011",reg:"dec_stable",sp:6},{id:"BIOMD0000000861",name:"Bachmann2011",reg:"dec_stable",sp:26},{id:"BIOMD0000000863",name:"Kosinsky2018",reg:"inc_stable",sp:6},{id:"BIOMD0000000028",name:"Markevich2004",reg:"inc_stable",sp:16},{id:"BIOMD0000000648",name:"Padala2017",reg:"dec_stable",sp:53},{id:"BIOMD0000000744",name:"Hu2019",reg:"inc_stable",sp:5},{id:"BIOMD0000000668",name:"Zhu2015",reg:"directly_stable",sp:10},{id:"BIOMD0000000811",name:"He2017",reg:"dec_stable",sp:6},{id:"BIOMD0000000812",name:"Galante2012",reg:"inc_stable",sp:4},{id:"BIOMD0000000360",name:"Panteleev2002B",reg:"dec_stable",sp:9},{id:"BIOMD0000000572",name:"Costa2014",reg:"dec_stable",sp:26},{id:"BIOMD0000000208",name:"Deineko2003",reg:"inc_stable",sp:6},{id:"BIOMD0000000830",name:"GiantsosAdams2013",reg:"inc_stable",sp:6},{id:"BIOMD0000000493",name:"Schittler2010",reg:"inc_stable",sp:3},{id:"BIOMD0000000579",name:"Sengupta2015",reg:"directly_stable",sp:240},{id:"BIOMD0000000541",name:"Yugi2014",reg:"increasing",sp:30},{id:"BIOMD0000000559",name:"Ouzounoglou2014",reg:"inc_stable",sp:89},{id:"BIOMD0000000746",name:"Saad2017",reg:"inc_stable",sp:4},{id:"BIOMD0000000163",name:"Zi2007",reg:"dec_stable",sp:16},{id:"BIOMD0000000407",name:"Schliemann2011",reg:"inc_stable",sp:47},{id:"BIOMD0000000357",name:"Lee2010",reg:"dec_stable",sp:9},{id:"BIOMD0000000757",name:"Abernathy2016",reg:"inc_stable",sp:7},{id:"BIOMD0000000796",name:"Yang2012",reg:"dec_stable",sp:5},{id:"BIOMD0000000269",name:"Liu2010",reg:"dec_stable",sp:9},{id:"BIOMD0000000791",name:"Wilson2012",reg:"inc_stable",sp:5},{id:"BIOMD0000000656",name:"Padala2017b",reg:"dec_stable",sp:53},{id:"BIOMD0000000738",name:"MouseIronDistr",reg:"inc_stable",sp:11},{id:"BIOMD0000000417",name:"Ratushny2012",reg:"inc_stable",sp:1},{id:"BIOMD0000000131",name:"Izhikevich2004",reg:"directly_stable",sp:2},{id:"BIOMD0000000604",name:"Petelenz2013",reg:"directly_stable",sp:29},{id:"BIOMD0000000854",name:"Gray2016",reg:"inc_stable",sp:4},{id:"BIOMD0000000398",name:"Sivakumar2011",reg:"inc_stable",sp:27},{id:"BIOMD0000000179",name:"Kim2007",reg:"dec_stable",sp:7},{id:"BIOMD0000000227",name:"Radulescu2008",reg:"oscillation",sp:45},{id:"BIOMD0000000660",name:"Barr2017",reg:"inc_stable",sp:15},{id:"BIOMD0000000358",name:"Stortelder1997",reg:"dec_stable",sp:12},{id:"BIOMD0000000688",name:"Wodarz2007",reg:"directly_stable",sp:16},{id:"BIOMD0000000094",name:"Yamada2003",reg:"inc_stable",sp:33},{id:"BIOMD0000000887",name:"Lim2014",reg:"inc_stable",sp:4},{id:"BIOMD0000000987",name:"Aubry1995",reg:"inc_stable",sp:9},{id:"BIOMD0000000769",name:"Eftimie2017",reg:"inc_stable",sp:5},{id:"BIOMD0000000167",name:"Mayya2005",reg:"directly_stable",sp:8},{id:"BIOMD0000000916",name:"Kraan1999",reg:"dec_stable",sp:5},{id:"BIOMD0000000786",name:"Lipniacki2004",reg:"directly_stable",sp:15},{id:"BIOMD0000000051",name:"Chassagnole2002",reg:"dec_stable",sp:18},{id:"BIOMD0000000884",name:"Cortes2019",reg:"dec_stable",sp:3},{id:"BIOMD0000000801",name:"Sturrock2015",reg:"dec_stable",sp:4},{id:"BIOMD0000000762",name:"Kuznetsov1994",reg:"oscillation",sp:2},{id:"BIOMD0000000650",name:"Owen1998",reg:"directly_stable",sp:3},{id:"BIOMD0000000684",name:"Wodarz2003",reg:"inc_stable",sp:10},{id:"BIOMD0000000433",name:"Sarma2012",reg:"dec_stable",sp:11},{id:"BIOMD0000000288",name:"Wang2009",reg:"inc_stable",sp:19},{id:"BIOMD0000000395",name:"Sivakumar2011b",reg:"inc_stable",sp:23},{id:"BIOMD0000001038",name:"Alharbi2019",reg:"directly_stable",sp:3},{id:"BIOMD0000000800",name:"Precup2012",reg:"dec_stable",sp:3},{id:"BIOMD0000000524",name:"Kallenberger2014",reg:"dec_stable",sp:18},{id:"BIOMD0000000607",name:"PetelenzKuehn",reg:"directly_stable",sp:29},{id:"BIOMD0000000678",name:"Tomida2003",reg:"oscillation",sp:2},{id:"BIOMD0000000654",name:"Padala2017c",reg:"directly_stable",sp:53},{id:"BIOMD0000000126",name:"Clancy2002",reg:"dec_stable",sp:9},{id:"BIOMD0000000363",name:"Lee2010b",reg:"inc_stable",sp:4},{id:"BIOMD0000000718",name:"Li2008",reg:"dec_stable",sp:16},{id:"BIOMD0000000052",name:"Brands2002",reg:"dec_stable",sp:11},{id:"BIOMD0000000646",name:"Barr2016",reg:"dec_stable",sp:11},{id:"BIOMD0000000386",name:"Arnold2011",reg:"increasing",sp:2},{id:"BIOMD0000000057",name:"Sneyd2002",reg:"dec_stable",sp:6},{id:"BIOMD0000000081",name:"Suh2004",reg:"directly_stable",sp:21}
+];
+
+// ============ REGIME CONFIG ============
+var regimes = [
+  {key:"inc_stable",color:"#5B9BD5",icon:"📈",label:"增长→稳态"},
+  {key:"dec_stable",color:"#E8913A",icon:"📉",label:"衰减→稳态"},
+  {key:"directly_stable",color:"#50B86C",icon:"⚖",label:"稳态型"},
+  {key:"oscillation",color:"#9B59B6",icon:"🔄",label:"振荡型"},
+  {key:"increasing",color:"#2ECC71",icon:"⬆",label:"单调增长"},
+  {key:"decreasing",color:"#E74C3C",icon:"⬇",label:"单调衰减"},
+  {key:"complex",color:"#95A5A6",icon:"🔀",label:"复合型"}
+];
+var rmeta = {}; regimes.forEach(function(d){rmeta[d.key]=d;});
+var color = d3.scaleOrdinal().domain(regimes.map(function(d){return d.key;})).range(regimes.map(function(d){return d.color;}));
+
+// ============ HIERARCHY ============
+var groups = regimes.map(function(d){return d.key;});
+var hdata = {name:"Bio Models"};
+hdata.children = groups.map(function(reg){
+  var kids = models.filter(function(m){return m.reg===reg;}).map(function(m){
+    return {name:m.name,id:m.id,value:Math.max(30,m.sp),model:m};
+  });
+  return {name:reg,children:kids};
+}).filter(function(f){return f.children.length>0;});
+
+// ============ PACK ============
+var W=1200,H=880;
+var pack=d3.pack().size([W,H]).padding(16);
+var root=pack(d3.hierarchy(hdata).sum(function(d){return d.value;}).sort(function(a,b){return b.value-a.value;}));
+
+// ============ SVG ============
+var svg=d3.select("#chart").append("svg")
+  .attr("viewBox","0 0 "+W+" "+H).attr("preserveAspectRatio","xMidYMid meet")
+  .style("width","100%").style("height","100%").style("background","transparent").style("cursor","pointer");
+
+// ============ TOOLTIP ============
+var tt=d3.select("#chart-wrap").append("div").attr("class","tt");
+
+// ============ NODES ============
+var gNode=svg.append("g");
+var gLabel=svg.append("g").attr("pointer-events","none").attr("text-anchor","middle");
+
+var desc=root.descendants().slice(1);
+var node=gNode.selectAll("circle").data(desc).join("circle")
+  .attr("cx",function(d){return d.x;}).attr("cy",function(d){return d.y;}).attr("r",function(d){return d.r;})
+  .attr("fill",function(d){
+    if(d.children){var fc=d3.color(color(d.data.name));fc.opacity=0.18;return fc+"";}
+    return color(d.parent.data.name);
+  })
+  .attr("stroke",function(d){return d.children?"rgba(255,255,255,0.12)":"#fff";})
+  .attr("stroke-width",function(d){return d.children?1.2:2.5;})
+  .attr("cursor","pointer")
+  .on("mouseover",function(ev,d){
+    d3.select(this).attr("stroke","#fff").attr("stroke-width",3);
+    if(!d.children){
+      var m=d.data.model,ri=rmeta[m.reg]||{};
+      tt.style("opacity",1).html("<b>"+m.name+"</b><br/>"+(ri.icon||"")+" "+ri.label+"<br/>物种: <b>"+m.sp+"</b><br/>ID: "+m.id);
+    }else{
+      var ri=rmeta[d.data.name]||{};
+      tt.style("opacity",1).html("<b>"+(ri.icon||"")+" "+ri.label+"</b><br/>"+d.children.length+" 个系统 · 点击放大");
+    }
+  })
+  .on("mousemove",function(ev){
+    var r=document.getElementById("chart-wrap").getBoundingClientRect();
+    var tx=ev.clientX-r.left+16,ty=ev.clientY-r.top-8;
+    if(tx+350>r.width)tx=ev.clientX-r.left-350;if(ty<4)ty=4;
+    tt.style("left",tx+"px").style("top",ty+"px");
+  })
+  .on("mouseout",function(){d3.select(this).attr("stroke",function(d){return d.children?"rgba(255,255,255,0.12)":"#fff";}).attr("stroke-width",function(d){return d.children?1.2:2.5;});tt.style("opacity",0);})
+  .on("click",function(ev,d){ev.stopPropagation();if(d.children)zoomTo(d);else{alert("🧬 "+d.data.model.name+"\n━━━━\nID: "+d.data.model.id+"\nRegime: "+(rmeta[d.data.model.reg]||{}).label+"\n物种数: "+d.data.model.sp);}});
+
+// ============ LABELS ============
+var labels=gLabel.selectAll("text").data(desc.filter(function(d){return d.children;})).join("text")
+  .attr("x",function(d){return d.x;}).attr("y",function(d){return d.y;})
+  .text(function(d){var ri=rmeta[d.data.name]||{};return ri.label;})
+  .attr("fill","#e8e8f0").style("font-weight","700").style("font-size","14px")
+  .style("font-family","-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC',sans-serif")
+  .style("paint-order","stroke").style("stroke","rgba(15,25,35,0.7)").style("stroke-width","3px");
+
+// Model labels (hidden by default)
+var mlabels=gLabel.selectAll("text.ml").data(desc.filter(function(d){return !d.children;})).join("text").attr("class","ml")
+  .attr("x",function(d){return d.x;}).attr("y",function(d){return d.y;})
+  .text(function(d){return d.data.name;})
+  .attr("fill","#d0d0e0").style("font-weight","400").style("font-size","11px")
+  .style("font-family","-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC',sans-serif")
+  .style("paint-order","stroke").style("stroke","rgba(10,20,30,0.65)").style("stroke-width","2.5px")
+  .style("display","none");
+
+// ============ ZOOM ============
+var focus=root,view={x:W/2,y:H/2,k:1};
+function applyT(){var tx=W/2-view.x*view.k,ty=H/2-view.y*view.k,t="translate("+tx+","+ty+") scale("+view.k+")";gNode.attr("transform",t);gLabel.attr("transform",t);}
+applyT();
+
+function zoomTo(d){
+  focus=d;var tk=d===root?1:Math.min(W,H)/(d.r*2.2);
+  svg.transition().duration(500).tween("zoom",function(){
+    var ix=d3.interpolate(view.x,d.x),iy=d3.interpolate(view.y,d.y),ik=d3.interpolate(view.k,tk);
+    return function(t){view.x=ix(t);view.y=iy(t);view.k=ik(t);applyT();};
+  });
+  // Show model labels for this family
+  if(d!==root){
+    setTimeout(function(){
+      mlabels.filter(function(l){return l.parent===d;}).style("display","inline").style("fill-opacity",1);
+    },520);
+  }else{
+    mlabels.style("display","none");
+  }
+}
+svg.on("click",function(){if(focus!==root)zoomTo(root);});
+
+// ============ LEGEND ============
+var leg=document.getElementById("legend");
+regimes.forEach(function(r){
+  var cnt=models.filter(function(m){return m.reg===r.key;}).length;
+  if(cnt>0){
+    var span=document.createElement("span");span.className="leg-item";
+    span.innerHTML='<span class="leg-dot" style="background:'+r.color+'"></span>'+r.icon+' '+r.label+' ('+cnt+')';
+    leg.appendChild(span);
+  }
+});
+
+// ============ ZOOM BEHAVIOR ============
+var d3Zoom=d3.zoom().scaleExtent([0.5,15]).on("zoom",function(ev){
+  view.k=ev.transform.k;
+  view.x=(W/2-ev.transform.x)/view.k;
+  view.y=(H/2-ev.transform.y)/view.k;
+  applyT();
+});
+svg.call(d3Zoom);
+
+// Resize
+window.addEventListener("resize",function(){location.reload();});
+</script>
+</body>
+</html>
