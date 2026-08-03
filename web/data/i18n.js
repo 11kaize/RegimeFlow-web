@@ -5,6 +5,7 @@ const I18N = {
   'nav.overview':     { zh: '关于',               en: 'About' },
   'nav.graph':        { zh: '探索模型',           en: 'Models' },
   'nav.predict':      { zh: '轨迹预测',           en: 'Prediction' },
+  'nav.models':      { zh: '模型库',             en: 'Models' },
 
   // ===== 概览页 =====
   'overview.heroTitle':    { zh: '面向 1000+ 生物系统的', en: 'Cross-System Trajectory Prediction' },

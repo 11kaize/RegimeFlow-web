@@ -6,7 +6,7 @@
 <title>RegimeFlow — Biological Trajectory Forecasting</title>
 <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js"></script>
-<link rel="stylesheet" href="css/style.css?v=4">
+<link rel="stylesheet" href="css/style.css?v=8">
 <script src="data/i18n.js?v=4"></script>
 <script src="js/i18n.js?v=4"></script>
 </head>
@@ -16,66 +16,67 @@
 <nav class="navbar">
   <a href="/" class="nav-logo">RegimeFlow</a>
   <div class="nav-links">
-    <button class="nav-btn active" data-view="bubble" data-i18n="nav.graph">Models</button>
+    <button class="nav-btn active" data-view="taxonomy">Models</button>
     <button class="nav-btn" data-view="predict" data-i18n="nav.predict">Prediction</button>
     <a href="https://github.com/hengrao02/RegimeFlow" target="_blank" class="nav-btn">GitHub ↗</a>
-    <button id="lang-switch" class="nav-btn lang-switch" onclick="toggleLang()">EN</button>
   </div>
 </nav>
 
-<!-- 泡泡图视图（默认首页） -->
-<div id="view-bubble" class="view active">
-
-  <!-- 标题 -->
+<!-- Taxonomy Circle Packing 视图（默认首页） -->
+<div id="view-taxonomy" class="view active">
   <section class="hero-compact" style="text-align:center;max-width:80%;margin:0 auto;">
-    <h1 data-i18n="overview.heroTitle" style="text-align:center;display:block;width:100%;">Cross-System Trajectory</h1>
-    <p class="hero-sub" data-i18n="overview.heroSub" style="text-align:center;">Prediction for 1000+ Biological Systems</p>
+    <h1 data-i18n="overview.heroTitle" style="text-align:center;display:block;width:100%;">Taxonomic Composition</h1>
+    <p class="hero-sub" style="text-align:center;">1,050 Biological Models</p>
   </section>
 
-  <!-- 气泡图 — 占页面主体 -->
-  <div class="bubble-container">
-    <div id="family-nav" class="family-nav" style="display:none;">
-      <button id="btn-back-all" class="btn-back-all">← Back</button>
-      <span id="family-name" class="family-name"></span>
-    </div>
-    <div id="bubble-chart"></div>
+  <!-- 全局搜索栏 -->
+  <div id="tax-global-search-bar" style="max-width:640px;margin:0 auto 10px;position:relative;">
+    <input id="tax-global-search" type="text" placeholder="Search 1,050 models by name or ID…"
+      style="width:100%;padding:10px 16px;font-size:14px;background:#1a2a3a;border:1px solid #2a4057;
+        border-radius:10px;color:#e0e6ed;outline:none;box-sizing:border-box;">
+    <div id="tax-global-results" style="display:none;position:absolute;top:100%;left:0;right:0;z-index:20;
+      background:#162231;border:1px solid #2a4057;border-radius:0 0 10px 10px;
+      max-height:320px;overflow-y:auto;box-shadow:0 8px 24px rgba(0,0,0,0.5);"></div>
+  </div>
 
-    <!-- 卡片网格视图 (Level 3) -->
-    <div id="card-grid-view" class="card-grid-view" style="display:none;">
+  <div id="taxonomy-pack-container" style="max-width:96%;margin:0 auto;padding:4px 0;">
+    <div id="taxonomy-pack-chart" style="width:100%;height:78vh;min-height:560px;max-height:900px;overflow:hidden;"></div>
+
+    <!-- Domain list table (shown when a large domain is clicked) -->
+    <div id="taxonomy-table-view" style="display:none;">
       <div class="cg-topbar">
-        <button id="cg-back" class="btn-back-all">← Back</button>
-        <span id="cg-title" class="cg-title"></span>
+        <button id="tax-table-back" class="btn-back-all">← Back to Bubbles</button>
+        <span id="tax-table-title" class="cg-title"></span>
         <div class="cg-actions">
-          <select id="cg-filter" class="cg-sort">
-            <option value="all">All Sizes</option>
-            <option value="micro">Micro (1–10)</option>
-            <option value="small">Small (11–30)</option>
-            <option value="medium">Medium (31–100)</option>
-            <option value="large">Large (100+)</option>
+          <select id="tax-table-filter" class="cg-sort">
+            <option value="all">All Regimes</option>
+            <option value="oscillation">Oscillation</option>
+            <option value="inc_stable">Increasing Stable</option>
+            <option value="dec_stable">Decreasing Stable</option>
+            <option value="directly_stable">Direct Stable</option>
           </select>
-          <input id="cg-search" class="cg-search" placeholder="Search models…" />
-          <select id="cg-sort" class="cg-sort">
+          <input id="tax-table-search" class="cg-search" placeholder="Search by name or ID…" />
+          <select id="tax-table-sort" class="cg-sort">
             <option value="name">By Name</option>
             <option value="species">By Species</option>
-            <option value="year">By Year</option>
+            <option value="id">By ID</option>
           </select>
         </div>
       </div>
-      <div id="cg-grid" class="cg-grid"></div>
-      <div id="cg-pagination" class="cg-pagination"></div>
+      <div id="tax-stats-bar" class="tax-stats-bar">
+        <span id="tax-stats-text" class="tax-stats-text"></span>
+        <div class="tax-batch-actions">
+          <button id="tax-select-all" class="tax-action-btn">☐ Select all</button>
+          <button id="tax-download" class="tax-action-btn">⬇ Download CSV</button>
+        </div>
+      </div>
+      <div id="tax-table-grid" class="tax-table"></div>
+      <div id="tax-table-pagination" class="tax-pagination"></div>
     </div>
   </div>
-
-  <!-- 链接 — 图表下方 -->
-  <div class="links-below">
-    <div class="ov-hero-links">
-      <a href="https://openreview.net/forum?id=sI3UUkXJxs" target="_blank" class="ov-btn ov-btn-primary" data-i18n="overview.paperBtn">Paper (OpenReview)</a>
-      <a href="https://github.com/hengrao02/RegimeFlow" target="_blank" class="ov-btn" data-i18n="overview.codeBtn">GitHub Repository</a>
-      <a href="https://huggingface.co/datasets/HengRao/SysBio-Traj" target="_blank" class="ov-btn" data-i18n="overview.datasetBtn">Dataset (HuggingFace)</a>
-    </div>
-    <a href="#" class="ov-demo-link" onclick="document.querySelector('.nav-btn[data-view=predict]').click(); return false;" data-i18n="overview.demoBtn">🔬 试试在线预测 →</a>
+  <div id="taxonomy-hint" style="text-align:center;padding:8px;color:#8899aa;font-size:12px;">
+    Click a circle to zoom in · Click background to zoom out
   </div>
-
 </div>
 
 <!-- Prediction视图 -->
@@ -86,8 +87,8 @@
   <div class="predict-layout">
     <div class="predict-sidebar">
       <div class="input-tabs">
-        <button class="input-tab active" data-tab="examples" data-i18n="predict.tabExamples">示例系统</button>
-        <button class="input-tab" data-tab="custom" data-i18n="predict.tabCustom">自定义数据</button>
+        <button class="input-tab active" data-tab="examples" data-i18n="predict.tabExamples">Pathway Models</button>
+        <button class="input-tab" data-tab="custom" data-i18n="predict.tabCustom">Custom Data</button>
       </div>
       <div id="system-list"></div>
       <div id="custom-input-panel" style="display:none;">
@@ -134,56 +135,39 @@
   </div>
 </div>
 
-<script src="data/models.js?v=3"></script>
+<script src="js/core/utils.js?v=1"></script>
+<script src="data/regime-mappings.js?v=1"></script>
+<script src="data/pathway-models.js?v=1"></script>
 <script src="data/bio-models.js?v=5"></script>
-<script src="data/sample_traj.js?v=3"></script>
-<script src="js/bubble-chart.js?v=37"></script>
-<script src="js/model-detail.js?v=3"></script>
-<script src="js/prediction.js?v=7"></script>
+<script src="data/bio-domains.js?v=1"></script>
+<script src="js/components/detail-panel.js?v=1"></script>
+<script src="js/components/skeleton.js?v=1"></script>
+<script src="js/prediction.js?v=8"></script>
+<script src="js/taxonomy-pack.js?v=13"></script>
 <script>
-// 初始化
+// ---- Taxonomy (default page) ----
 (function() {
-  var el = document.getElementById('bubble-chart');
-  if (!el) { console.error('bubble-chart element not found'); return; }
-
-  if (typeof d3 === 'undefined') {
-    el.innerHTML = '<div style="color:#E74C3C;padding:20px;text-align:center;">❌ D3.js failed to load. Please refresh.</div>';
-    return;
-  }
-
-  if (typeof BIO_MODELS_DATA === 'undefined') {
-    el.innerHTML = '<div style="color:#E74C3C;padding:20px;text-align:center;">❌ Data not loaded (BIO_MODELS_DATA)</div>';
-    return;
-  }
-
-  try {
-    initBubbleChart(BIO_MODELS_DATA, 'bio');
-    var svgCount = el.querySelectorAll('svg').length;
-    var circleCount = el.querySelectorAll('circle').length;
-    if (circleCount === 0) {
-      el.insertAdjacentHTML('afterbegin', '<div style="color:#F39C12;padding:10px;text-align:center;font-size:12px;">⚠ Chart rendered but no circles found ('+BIO_MODELS_DATA.length+' models loaded)</div>');
-    }
-    console.log('Bubble chart: ' + circleCount + ' circles, ' + svgCount + ' SVG(s). Data: ' + BIO_MODELS_DATA.length + ' models. D3: v' + d3.version);
-  } catch(e) {
-    el.innerHTML = '<div style="color:#E74C3C;padding:20px;text-align:center;">❌ Render error: ' + e.message + '</div>';
-    console.error('initBubbleChart error:', e);
+  if (typeof BIO_MODELS_DATA !== 'undefined' && typeof BIO_DOMAIN_DATA !== 'undefined') {
+    setTimeout(function() { initTaxonomyPack(null, 'taxonomy-pack-chart'); }, 100);
   }
 })();
 
 initPrediction();
 
-// 导航切换
+// ---- Navigation ----
 document.querySelectorAll('.nav-btn[data-view]').forEach(btn => {
   btn.addEventListener('click', () => {
     document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
     document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
     document.getElementById('view-' + btn.dataset.view).classList.add('active');
+
+    if (btn.dataset.view === 'taxonomy') setTimeout(function() { resizeTaxonomyPack(); }, 100);
     if (btn.dataset.view === 'predict') setTimeout(() => window._predictChart && window._predictChart.resize(), 200);
   });
 });
 
-// 模态框关闭
+// ---- Modal ----
 document.getElementById('modal-overlay').addEventListener('click', e => {
   if (e.target === e.currentTarget) closeModal();
 });

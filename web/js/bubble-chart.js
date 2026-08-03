@@ -1,4 +1,5 @@
 // 气泡图 — D3 Circle Packing + dark theme
+// v38: 响应式字体 + 自动换行 + 全节点Tooltip + 最小半径阈值
 function initBubbleChart(models, mode) {
   mode = mode || 'ml';
   var container = document.getElementById('bubble-chart');
@@ -36,30 +37,16 @@ function initBubbleChart(models, mode) {
     { key: 'medium', label: 'Medium', range: [31, 100] },
     { key: 'large',  label: 'Large',  range: [101, 9999] }
   ];
-  // Level 1 颜色 → Level 2 变体 (略浅)
-  var l2ColorVariants = {
-    stable:      ['#6DC88E','#82D49E','#97E0AE','#ACECBE'],
-    oscillation: ['#AD6BC4','#BF7DD4','#D18FE4','#E3A1F4'],
-    growth:      ['#6DABE5','#82BBF0','#97CBFB','#ACDBFF'],
-    decay:       ['#F0A34A','#F5B560','#FAC776','#FFD98C']
-  };
+  // Level 1 颜色 → Level 2 变体 (略浅) — see data/regime-mappings.js
 
   // 原始 regime 合并映射
-  var regimeToL1 = {
-    directly_stable: 'stable',
-    oscillation: 'oscillation',
-    inc_stable: 'growth',
-    increasing: 'growth',
-    dec_stable: 'decay',
-    decreasing: 'decay'
-  };
 
   // 构建三级 hierarchy
   function buildBioHierarchy(models) {
     // L1 分组
     var l1Groups = {};
     models.forEach(function(m) {
-      var l1 = regimeToL1[m.regime] || 'stable';
+      var l1 = REGIME_TO_L1[m.regime] || 'stable';
       if (!l1Groups[l1]) l1Groups[l1] = [];
       l1Groups[l1].push(m);
     });
@@ -82,9 +69,8 @@ function initBubbleChart(models, mode) {
 
       var l2Children = sizeLabels.map(function(sz, si) {
         var modelsInL2 = l2Groups[sz.key] || [];
-        // L3: 模型列表，>20 个则分组
         var groups = [];
-        var chunkSize = 18; // 每组最多 18 个模型
+        var chunkSize = 18;
         for (var i = 0; i < modelsInL2.length; i += chunkSize) {
           var chunk = modelsInL2.slice(i, i + chunkSize);
           groups.push({
@@ -130,7 +116,6 @@ function initBubbleChart(models, mode) {
   var groupDefs, groupMeta, groups, color, hierarchyData;
 
   if (mode === 'bio') {
-    // 三级：L1 大类 → L2 物种规模(泡泡) → 卡片网格
     var bioTree = buildBioHierarchy(models);
     hierarchyData = {
       name: 'SysBio-Traj',
@@ -142,11 +127,9 @@ function initBubbleChart(models, mode) {
           modelCount: l1.modelCount,
           value: l1.value,
           children: l1.l2Children.map(function(l2) {
-            // 每个子类只展示 6 个代表性模型泡泡
             var allModels = l2.models.slice();
             var sampleModels = allModels;
             if (allModels.length > 6) {
-              // 按物种数均匀抽样
               allModels.sort(function(a, b) { return (a.species || 0) - (b.species || 0); });
               var step = Math.floor(allModels.length / 6);
               sampleModels = [];
@@ -160,7 +143,7 @@ function initBubbleChart(models, mode) {
               level: 2,
               sizeKey: l2.sizeKey,
               modelCount: l2.models.length,
-              models: l2.models,  // 全量模型 → 卡片网格
+              models: l2.models,
               value: 800,
               children: sampleModels.map(function(m) {
                 return {
@@ -178,23 +161,21 @@ function initBubbleChart(models, mode) {
       }).filter(function(l1) { return l1.modelCount > 0; })
     };
 
-    // 颜色: L1/L2/L3 使用 L1 变体系列, L4 模型用 L2 颜色
+    // 颜色映射
     var l1ColorMap = {};
     bioL1Defs.forEach(function(d) { l1ColorMap[d.key] = d.color; });
     var l2ColorMap = {};
-    Object.keys(l2ColorVariants).forEach(function(k) {
+    Object.keys(REGIME_L2_COLOR_VARIANTS).forEach(function(k) {
       l2ColorMap[k] = {};
       sizeLabels.forEach(function(sz, i) {
-        l2ColorMap[k][sz.key] = l2ColorVariants[k][i];
+        l2ColorMap[k][sz.key] = REGIME_L2_COLOR_VARIANTS[k][i];
       });
     });
 
-    // Color accessor — 根据 level 返回合适的颜色
     window._bioColor = function(d) {
       if (!d || !d.data) return '#555';
       var l1 = d.data.l1key;
       if (!l1) {
-        // Try parent
         if (d.parent && d.parent.data && d.parent.data.l1key) l1 = d.parent.data.l1key;
         else if (d.parent && d.parent.parent && d.parent.parent.data && d.parent.parent.data.l1key) l1 = d.parent.parent.data.l1key;
       }
@@ -207,7 +188,6 @@ function initBubbleChart(models, mode) {
         var cm2 = l2ColorMap[l1] || {};
         return cm2[d.data.sizeKey] || l1ColorMap[l1] || '#555';
       }
-      // Level 4: individual models — use L2 color
       var l1k = d.data.l1key;
       if (d.parent && d.parent.data && d.parent.data.sizeKey) {
         var cm3 = l2ColorMap[l1k] || {};
@@ -216,24 +196,21 @@ function initBubbleChart(models, mode) {
       return l1ColorMap[l1k] || '#555';
     };
 
-    color = { toString: function() { return '#555'; } }; // fallback, not used directly
+    color = { toString: function() { return '#555'; } };
 
-    // groupMeta for navigation info
     groupMeta = {};
     bioL1Defs.forEach(function(d) { groupMeta[d.key] = d; });
     sizeLabels.forEach(function(sz) { groupMeta[sz.key] = sz; });
     groups = bioL1Defs.map(function(d) { return d.key; });
 
-    // shortNames for truncation in Level 4
     var _shortNames = shortNames;
-    shortNames = {}; // bio mode doesn't use shortNames for model truncation; handled inline
+    shortNames = {};
   } else {
     groupDefs = mlFamilyDefs;
     groupMeta = {}; groupDefs.forEach(function(d) { groupMeta[d.key] = d; });
     groups = groupDefs.map(function(d) { return d.key; });
     color = d3.scaleOrdinal().domain(groups).range(groupDefs.map(function(d) { return d.color; }));
 
-    // ML: 按家族分组
     hierarchyData = {
       name: 'ML Models',
       children: groups.map(function(fam) {
@@ -255,7 +232,7 @@ function initBubbleChart(models, mode) {
     .sort(function(a, b) { return b.value - a.value; }));
   var focus = root;
 
-  // ---- SVG: 透明背景 ----
+  // ---- SVG ----
   var svg = d3.select(container).append('svg')
     .attr('viewBox', '0 0 ' + W + ' ' + H)
     .attr('width', W)
@@ -263,16 +240,128 @@ function initBubbleChart(models, mode) {
     .attr('preserveAspectRatio', 'xMidYMid meet')
     .attr('style', 'width:100%;height:100%;display:block;background:transparent;cursor:pointer;');
 
-  // ---- Tooltip: 深色主题 ----
+  // ================================================================
+  // 通用工具函数
+  // ================================================================
+
+  // 最小半径阈值 — 小于此值的节点不渲染文字
+  var MIN_RADIUS_FOR_TEXT = 14;
+
+  // 获取节点的 L1 key（向上遍历追溯）
+  function getL1key(d) {
+    if (d.data && d.data.l1key) return d.data.l1key;
+    if (d.parent) return getL1key(d.parent);
+    return null;
+  }
+
+  // 获取节点的 sizeKey（向上遍历追溯）
+  function getSizeKey(d) {
+    if (d.data && d.data.sizeKey) return d.data.sizeKey;
+    if (d.parent) return getSizeKey(d.parent);
+    return null;
+  }
+
+  // 构建 Tooltip HTML
+  function buildTooltipHTML(d) {
+    var html = '';
+
+    if (!d.children && d.data.model) {
+      // ===== 叶子节点：模型详情 =====
+      var m = d.data.model;
+      if (mode === 'bio') {
+        var l1k = REGIME_TO_L1[m.regime] || 'stable';
+        var l1info = groupMeta[l1k] || {};
+        html +=
+          '<div style="font-size:15px;font-weight:700;color:#ffffff;margin-bottom:4px;word-break:break-word;">' +
+          (m.name || '') + '</div>' +
+          '<div style="color:#8899aa;font-size:12px;margin-bottom:6px;">' +
+          (l1info.icon || '') + ' ' + (l1info.label || '') + ' <span style="color:#4a5f73;">·</span> ' +
+          (m.regime || '') + '</div>' +
+          '<div style="display:flex;gap:14px;flex-wrap:wrap;font-size:12px;">' +
+          '<span>🧬 Species: <b style="color:#e0e6ed;">' + (m.species || '—') + '</b></span>' +
+          '</div>' +
+          '<div style="color:#4a5f73;font-size:11px;margin-top:4px;font-family:Consolas,Monaco,monospace;">' +
+          (m.id || '') + '</div>';
+      } else {
+        var gi = groupMeta[m.family] || {};
+        html +=
+          '<div style="font-size:15px;font-weight:700;color:#ffffff;margin-bottom:4px;word-break:break-word;">' +
+          (m.fullName || m.name || '') + '</div>' +
+          '<div style="color:#8899aa;font-size:12px;margin-bottom:6px;">' +
+          (gi.icon || '') + ' ' + (t('family.' + m.family) || m.family) +
+          ' <span style="color:#4a5f73;">·</span> ' +
+          (t('type.' + m.type) || m.type) + '</div>';
+        if (m.hidden_dim > 0) {
+          html += '<div style="font-size:12px;color:#8899aa;">' +
+            '📐 hidden_dim=' + m.hidden_dim + ', layers=' + m.layers + '</div>';
+        } else {
+          html += '<div style="font-size:12px;color:#8899aa;">🧠 ' + (t('tooltip.pretrained') || 'Pretrained') + '</div>';
+        }
+        html += '<div style="font-size:12px;color:#8899aa;">' +
+          '⚙ lr=' + m.lr + ', ctx=' + m.context_len + '→pred=' + m.pred_len + '</div>';
+        if (m.paper_metrics && Object.keys(m.paper_metrics).length) {
+          html += '<div style="font-size:11px;color:#6a8299;margin-top:3px;">' +
+            Object.entries(m.paper_metrics).map(function(kv) {
+              return '📊 ' + kv[0] + ': <b style="color:#c0d0e0;">' + kv[1] + '</b>';
+            }).join('&nbsp;&nbsp;') + '</div>';
+        }
+      }
+    } else if (d.children) {
+      // ===== 父节点：分组信息 =====
+      var name = d.data.name || '';
+      var mcount = d.data.modelCount;
+      var level = d.data.level;
+      var l1k = getL1key(d);
+      var szKey = getSizeKey(d);
+
+      html += '<div style="font-size:14px;font-weight:700;color:#ffffff;margin-bottom:4px;">' +
+        name + '</div>';
+
+      if (mode === 'bio') {
+        if (level === 1) {
+          var l1def = groupMeta[l1k] || {};
+          html += '<div style="color:#8899aa;font-size:12px;margin-bottom:2px;">' +
+            (l1def.icon || '') + ' ' + (l1def.desc || '') + '</div>';
+          html += '<div style="color:#c0d0e0;font-size:12px;">' +
+            '📦 <b>' + mcount + '</b> models in ' + d.children.length + ' size groups</div>';
+        } else if (level === 2) {
+          var l1def2 = groupMeta[l1k] || {};
+          var szdef = groupMeta[szKey] || {};
+          html += '<div style="color:#8899aa;font-size:12px;margin-bottom:2px;">' +
+            (l1def2.icon || '') + ' ' + (l1def2.label || '') + ' · Species: ' +
+            (szdef.range ? szdef.range[0] + '–' + szdef.range[1] : szKey) + '</div>';
+          html += '<div style="color:#c0d0e0;font-size:12px;">' +
+            '📦 <b>' + mcount + '</b> models</div>';
+        } else {
+          html += '<div style="color:#c0d0e0;font-size:12px;">' +
+            '📦 <b>' + d.children.length + '</b> items</div>';
+        }
+        html += '<div style="color:#F39C12;font-size:11px;margin-top:4px;">' +
+          '🖱 Click to view details →</div>';
+      } else {
+        html += '<div style="color:#c0d0e0;font-size:12px;">' +
+          '📦 <b>' + d.children.length + '</b> models</div>';
+        html += '<div style="color:#F39C12;font-size:11px;margin-top:4px;">' +
+          '🖱 Click to zoom in →</div>';
+      }
+    }
+
+    return html;
+  }
+
+  // ================================================================
+  // Tooltip 元素
+  // ================================================================
   var tooltip = d3.select(container).append('div').attr('class','bubble-tooltip')
     .style('position','absolute').style('pointer-events','none').style('opacity',0)
-    .style('background','#1a2a3a').style('color','#e0e6ed')
-    .style('padding','10px 16px').style('border-radius','10px')
-    .style('font-size','13px').style('line-height','1.6')
-    .style('border','1px solid #2a4057')
-    .style('box-shadow','0 4px 20px rgba(0,0,0,0.5)')
-    .style('max-width','360px').style('z-index','10')
-    .style('transition','opacity 0.12s');
+    .style('background','rgba(22,34,49,0.97)').style('color','#e0e6ed')
+    .style('padding','12px 18px').style('border-radius','12px')
+    .style('font-size','13px').style('line-height','1.65')
+    .style('border','1px solid #3a5570')
+    .style('box-shadow','0 6px 28px rgba(0,0,0,0.55)')
+    .style('max-width','420px').style('z-index','10')
+    .style('backdrop-filter','blur(12px)').style('-webkit-backdrop-filter','blur(12px)')
+    .style('transition','opacity 0.10s');
 
   // ============================
   // 图层: 圆圈 → 标签
@@ -285,6 +374,9 @@ function initBubbleChart(models, mode) {
   window._bubbleSelected = null;
   var hoverTimer = null;
 
+  // ============================
+  // 圆圈节点
+  // ============================
   var node = gNode.selectAll('circle').data(descendants).join('circle')
     .attr('cx', function(d) { return d.x; }).attr('cy', function(d) { return d.y; })
     .attr('r',  function(d) { return d.r; })
@@ -324,58 +416,27 @@ function initBubbleChart(models, mode) {
     })
     .attr('stroke-width', function(d) { return d.children ? 1.2 : 2.5; })
     .attr('cursor', 'pointer')
+    // ---- 悬停：全节点 Tooltip ----
     .on('mouseenter', function(event, d) {
-      // 父级圆圈事件来自子元素 → 忽略，避免 L2/L3 tooltip 冲突
-      if (d.children && event.target !== this) return;
-      var self = d3.select(this);
       clearTimeout(hoverTimer);
-      self.attr('stroke', d.children ? 'rgba(255,255,255,0.6)' : '#ffffff')
+      var self = d3.select(this);
+      self.attr('stroke', 'rgba(255,255,255,0.75)')
         .attr('stroke-width', d.children ? 2.5 : 3.5);
 
-      hoverTimer = setTimeout(function() {
-        if (!d.children && d.data.model) {
-          var m = d.data.model, gi = groupMeta[mode==='bio'?m.regime:m.family] || {};
-          if (mode === 'bio') {
-            var l1 = regimeToL1[m.regime] || 'stable';
-            var l1info = groupMeta[l1] || {};
-            tooltip.html(
-              '<b style="font-size:15px;color:#e0e6ed;">'+m.name+'</b><br/>'+
-              '<span style="color:#8899aa;">'+(l1info.icon||'')+' '+l1info.label+' · '+m.regime+'</span><br/>'+
-              '🧬 Species: <b>'+m.species+'</b><br/>'+
-              '🆔 '+m.id);
-          } else {
-            var met = '';
-            if (m.paper_metrics && Object.keys(m.paper_metrics).length)
-              met = '<br/>' + Object.entries(m.paper_metrics).map(function(kv) { return '📊 '+kv[0]+': <b>'+kv[1]+'</b>'; }).join('&nbsp;&nbsp;');
-            tooltip.html(
-              '<b style="font-size:15px;color:#e0e6ed;">'+m.name+'</b><br/>'+
-              '<span style="color:#8899aa;">'+(gi.icon||'')+' '+t('family.'+m.family)+' · '+t('type.'+m.type)+'</span><br/>'+
-              (m.hidden_dim>0 ? '📐 hidden_dim='+m.hidden_dim+', layers='+m.layers+'<br/>' : '🧠 '+t('tooltip.pretrained')+'<br/>')+
-              '⚙ lr='+m.lr+', ctx='+m.context_len+'→pred='+m.pred_len + met);
-          }
-          tooltip.style('opacity', 1);
-        } else if (d.children) {
-          var name = d.data.name || '';
-          var mcount = d.data.modelCount || '';
-          var showCount = d.children.length;
-          tooltip.html(
-            '<b style="font-size:14px;color:#e0e6ed;">'+name+'</b><br/>'+
-            '<span style="color:#8899aa;font-size:12px;">Sample ' + showCount + ' / ' + (mcount || showCount) + ' total</span><br/>'+
-            '<span style="color:#F39C12;font-size:12px;">View all models →</span>');
-          tooltip.style('opacity', 1);
-        }
-      }, 150);
+      // 所有节点都显示 tooltip，无延迟
+      tooltip.style('opacity', 1).html(buildTooltipHTML(d));
     })
     .on('mousemove', function(event) {
       var r = container.getBoundingClientRect();
       var tx = event.clientX - r.left + 16, ty = event.clientY - r.top - 10;
-      if (tx + 370 > r.width) tx = event.clientX - r.left - 370;
+      var tw = 430;
+      if (tx + tw > r.width) tx = event.clientX - r.left - tw;
       if (ty < 4) ty = 4;
       tooltip.style('left',tx+'px').style('top',ty+'px');
     })
     .on('mouseleave', function() {
       clearTimeout(hoverTimer);
-      hoverTimer = setTimeout(function() { tooltip.style('opacity', 0); }, 150);
+      hoverTimer = setTimeout(function() { tooltip.style('opacity', 0); }, 100);
       d3.select(this)
         .attr('stroke', function(d) {
           if (mode === 'bio') {
@@ -387,14 +448,16 @@ function initBubbleChart(models, mode) {
         })
         .attr('stroke-width', function(d) { return d.children ? 1.2 : 2.5; });
     })
+    // ---- 点击 ----
     .on('click', function(event, d) {
       event.stopPropagation();
+      tooltip.style('opacity', 0);  // 点击后隐藏 tooltip
       if (!d.children && d.data.model) {
-        // 高亮选中气泡
         if (window._bubbleSelected) {
           window._bubbleSelected
             .attr('stroke', '#ffffff')
-            .attr('stroke-width', 2.5);
+            .attr('stroke-width', 2.5)
+            .attr('filter', null);
         }
         window._bubbleSelected = d3.select(this);
         window._bubbleSelected
@@ -402,11 +465,9 @@ function initBubbleChart(models, mode) {
           .attr('stroke-width', 3.5)
           .attr('filter', 'drop-shadow(0 0 6px rgba(243,156,18,0.6))');
 
-        // 打开侧边栏
-        openDetailPanel(d.data.model, mode, groupMeta);
+        openDetailPanel(d.data.model, mode);
       }
       else if (d.children) {
-        // 子节点是具体模型 → 卡片网格（L1 大类直接进入）
         if (mode === 'bio' && d.children[0] && d.children[0].data && d.children[0].data.model) {
           showCardGrid(d);
         } else {
@@ -425,7 +486,11 @@ function initBubbleChart(models, mode) {
     .attr('text-anchor','middle')
     .attr('fill','#e8e8f0')
     .style('font-weight','700')
-    .style('font-size', function(d) { return (mode === 'bio' && d.data.level === 1) ? '20px' : '14px'; })
+    .style('font-size', function(d) {
+      if (mode === 'bio' && d.data.level === 1) return '20px';
+      if (d.r < 60) return '13px';
+      return Math.max(13, Math.min(20, d.r * 0.25)) + 'px';
+    })
     .style('font-family','-apple-system,BlinkMacSystemFont,"Segoe UI","Inter","PingFang SC","Microsoft YaHei",sans-serif')
     .style('paint-order','stroke').style('stroke','rgba(15,25,35,0.70)')
     .style('stroke-width','2.8px').style('stroke-linecap','round').style('stroke-linejoin','round')
@@ -433,36 +498,58 @@ function initBubbleChart(models, mode) {
     .text(function(d) { return d.data.name || ''; });
 
   // ============================
-  // 模型名称 — 放入气泡内部正中心
+  // 模型名称 — 响应式字体 + 自动换行 + 最小半径阈值
   // ============================
   var modelLabelData = descendants.filter(function(d) { return !d.children && d.data.model; });
 
-  var modelTexts = gLabel.selectAll('text.model-center').data(modelLabelData, function(d) { return d.data.name + '-' + d.data.id; })
+  var modelTexts = gLabel.selectAll('text.model-center').data(modelLabelData, function(d) {
+    return (d.data.model ? d.data.model.id : '') + '-' + d.data.name;
+  })
     .join('text').attr('class','model-center')
-      .attr('x', function(d) { return d.x; })
-      .attr('y', function(d) { return d.y; })
       .attr('text-anchor','middle')
-      .attr('dominant-baseline','central')
-      .text(function(d) {
-        var name = d.data.name;
-        if (name.length > 18) name = (shortNames[name] || name.substring(0, 16) + '…');
-        else if (name.length > 13) name = name.substring(0, 11) + '…';
-        return name;
-      })
       .attr('fill','#ffffff')
       .style('font-weight','600')
-      .style('font-size', function(d) {
-        var sz = Math.max(9, Math.min(13, d.r / 5.5));
-        return sz + 'px';
-      })
       .style('font-family','-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif')
       .style('pointer-events','none')
       .style('paint-order','stroke')
-      .style('stroke','rgba(0,0,0,0.35)')
+      .style('stroke','rgba(0,0,0,0.45)')
       .style('stroke-width','1.5px')
       .style('stroke-linecap','round')
       .style('stroke-linejoin','round')
-      .attr('visibility','hidden');
+      .attr('visibility', function(d) {
+        return d.r >= MIN_RADIUS_FOR_TEXT ? 'visible' : 'hidden';
+      })
+      .each(function(d) {
+        var el = d3.select(this);
+        var r = d.r;
+        if (r < MIN_RADIUS_FOR_TEXT) return;
+
+        // 动态字号：半径越大字越大，clamp 在 10~17px
+        var fontSize = Math.max(10, Math.min(17, r * 0.40));
+        el.style('font-size', fontSize + 'px');
+
+        // 圆圈内可用宽度 ≈ r * 1.6，西文字符宽 ≈ fontSize * 0.55
+        var maxCharsPerLine = Math.max(4, Math.floor(r * 1.55 / (fontSize * 0.56)));
+
+        var name = d.data.name || '';
+        var lines = wrapText(name, maxCharsPerLine, 2);
+
+        // 行高偏移
+        var lineHeight = fontSize * 1.30;
+        var totalHeight = (lines.length - 1) * lineHeight;
+        var startY = -totalHeight / 2;
+        var cx = d.x;
+
+        el.selectAll('tspan').remove();
+        el.attr('y', null);  // 移除单行时的 y 绑定，改用 tspan dy
+
+        lines.forEach(function(line, i) {
+          el.append('tspan')
+            .attr('x', cx)
+            .attr('dy', i === 0 ? startY + 'px' : lineHeight + 'px')
+            .text(line);
+        });
+      });
 
   // ---- 底部交互提示 ----
   svg.append('text').attr('x',W/2).attr('y',H-14).attr('text-anchor','middle')
@@ -492,7 +579,6 @@ function initBubbleChart(models, mode) {
   }
   applyTransform();
 
-  // 家族导航条
   var familyNav = document.getElementById('family-nav');
   var familyNameEl = document.getElementById('family-name');
   var backBtn = document.getElementById('btn-back-all');
@@ -504,7 +590,6 @@ function initBubbleChart(models, mode) {
   }
 
   function zoomBack() {
-    // 返回上一级
     if (focus === root) return;
     var parent = focus.parent || root;
     modelTexts.attr('visibility','hidden');
@@ -518,7 +603,6 @@ function initBubbleChart(models, mode) {
       var ix = d3.interpolate(startX, parent.x), iy = d3.interpolate(startY, parent.y), ik = d3.interpolate(startK, targetK);
       return function(t) { view.x = ix(t); view.y = iy(t); view.k = ik(t); applyTransform(); };
     });
-    // Show family nav at level 1+
     if (parent !== root) updateFamilyNav(parent);
   }
 
@@ -534,9 +618,15 @@ function initBubbleChart(models, mode) {
   var cgPagination = document.getElementById('cg-pagination');
   var cgBack = document.getElementById('cg-back');
 
+  // Guard: if required DOM elements don't exist, skip card-grid setup
+  if (!cardGridView || !cgGrid) {
+    // Card grid view not available in this page — functions that use
+    // these elements (showCardGrid, renderCards) will return early.
+  }
+
   var currentCardModels = [];
   var currentCardPage = 0;
-  var currentCardParent = null; // the Level 2 bubble node
+  var currentCardParent = null;
   var CARDS_PER_PAGE = 20;
 
   function extractYear(name) {
@@ -546,7 +636,6 @@ function initBubbleChart(models, mode) {
 
   function showCardGrid(node) {
     currentCardParent = node;
-    // 收集模型：优先 node.data.models，否则从子节点提取 model
     currentCardModels = [];
     if (node.data && node.data.models) {
       currentCardModels = node.data.models;
@@ -563,18 +652,15 @@ function initBubbleChart(models, mode) {
 
     if (!cardGridView || !cgGrid) return;
 
-    // 切换视图
     document.getElementById('bubble-chart').style.display = 'none';
     if (familyNav) familyNav.style.display = 'none';
     cardGridView.style.display = '';
 
-    // 标题
     if (cgTitle) cgTitle.textContent = (node.data.name || '') + ' · ' + currentCardModels.length + ' models';
 
-    // 搜索 & 排序事件
     if (cgSearch) {
       cgSearch.value = '';
-      cgSearch.oninput = function() { currentCardPage = 0; renderCards(); };
+      cgSearch.oninput = debounce(function() { currentCardPage = 0; renderCards(); }, 200);
     }
     if (cgSort) {
       cgSort.value = 'name';
@@ -599,7 +685,6 @@ function initBubbleChart(models, mode) {
 
   function getFilteredModels() {
     var models = currentCardModels.slice();
-    // 规模筛选
     var filter = cgFilter ? cgFilter.value : 'all';
     if (filter !== 'all') {
       var ranges = { micro: [1,10], small: [11,30], medium: [31,100], large: [101,9999] };
@@ -609,7 +694,6 @@ function initBubbleChart(models, mode) {
         return sp >= range[0] && sp <= range[1];
       });
     }
-    // 搜索
     var q = cgSearch ? cgSearch.value.toLowerCase().trim() : '';
     if (q) {
       models = models.filter(function(m) {
@@ -617,7 +701,6 @@ function initBubbleChart(models, mode) {
                (m.id || '').toLowerCase().indexOf(q) >= 0;
       });
     }
-    // 排序
     var sortBy = cgSort ? cgSort.value : 'name';
     if (sortBy === 'species') {
       models.sort(function(a, b) { return (b.species || 0) - (a.species || 0); });
@@ -637,7 +720,6 @@ function initBubbleChart(models, mode) {
     var start = currentCardPage * CARDS_PER_PAGE;
     var pageModels = filtered.slice(start, start + CARDS_PER_PAGE);
 
-    // 颜色映射
     var regimeColorClass = {
       stable: 'regime-stable', oscillation: 'regime-osc',
       growth: 'regime-growth', decay: 'regime-decay'
@@ -646,7 +728,7 @@ function initBubbleChart(models, mode) {
 
     var html = '';
     pageModels.forEach(function(m) {
-      var l1 = (typeof regimeToL1 !== 'undefined') ? (regimeToL1[m.regime] || 'stable') : 'stable';
+      var l1 = REGIME_TO_L1[m.regime] || 'stable';
       var year = extractYear(m.name);
       html += '<div class="model-card" data-id="' + m.id + '">' +
         '<div class="mc-name">' + (m.name || '') + '</div>' +
@@ -660,16 +742,14 @@ function initBubbleChart(models, mode) {
     });
     cgGrid.innerHTML = html || '<div style="color:#556678;text-align:center;padding:40px;">No matching models</div>';
 
-    // 卡片点击 → 详情面板
     cgGrid.querySelectorAll('.model-card').forEach(function(card) {
       card.addEventListener('click', function() {
         var mid = card.getAttribute('data-id');
         var model = currentCardModels.find(function(m) { return m.id === mid; });
-        if (model) openDetailPanel(model, mode, groupMeta);
+        if (model) openDetailPanel(model, mode);
       });
     });
 
-    // 分页
     if (cgPagination) {
       var ph = '';
       if (totalPages > 1) {
@@ -732,10 +812,12 @@ function initBubbleChart(models, mode) {
 
     if (d.children && d !== root) {
       updateFamilyNav(d);
-      // Level 4 (individual models): show names
+      // 缩放后：r < 阈值仍隐藏，r >= 阈值显示并渲染文字
       if (d.data.level === 4 || (d.data.isModelGroup)) {
         var leaves = d.children || [];
-        modelTexts.filter(function(md) { return leaves.indexOf(md) >= 0; })
+        var visibleLeaves = leaves.filter(function(leaf) { return leaf.r >= MIN_RADIUS_FOR_TEXT; });
+        // 只显示半径达标的叶子节点
+        modelTexts.filter(function(md) { return leaves.indexOf(md) >= 0 && md.r >= MIN_RADIUS_FOR_TEXT; })
           .attr('visibility','visible');
       }
     } else if (d === root) {
@@ -744,128 +826,7 @@ function initBubbleChart(models, mode) {
   }
 
   window._bubbleChart = { redraw: function() { initBubbleChart(models, mode); } };
-  var rt; window._bubbleResizeHandler = function() {
-    clearTimeout(rt); rt = setTimeout(function() { initBubbleChart(models, mode); }, 300);
-  };
+  window._bubbleResizeHandler = debounce(function() { initBubbleChart(models, mode); }, 250);
   window.addEventListener('resize', window._bubbleResizeHandler);
   window.addEventListener('langchange', function() { initBubbleChart(models, mode); });
 }
-
-// =====================================================================
-// 全局侧边栏详情面板
-// =====================================================================
-function openDetailPanel(model, mode, groupMeta) {
-  var panel = document.getElementById('detail-panel');
-  var overlay = document.getElementById('detail-overlay');
-  var content = document.getElementById('detail-content');
-  if (!panel || !content) return;
-
-  var html = '';
-
-  if (mode === 'bio') {
-    var l1key = (typeof regimeToL1 !== 'undefined') ? (regimeToL1[model.regime] || 'stable') : 'stable';
-    var l1info = groupMeta ? (groupMeta[l1key] || {}) : {};
-    var hfBase = 'https://huggingface.co/datasets/HengRao/SysBio-Traj/resolve/main/Data/' + model.id + '/' + model.name;
-    html +=
-      '<div class="dp-header">' +
-        '<div class="dp-name">🧬 ' + (model.name || '') + '</div>' +
-        '<div class="dp-id">' + (model.id || '') + '</div>' +
-      '</div>' +
-      '<div class="dp-section">' +
-        '<div class="dp-section-title">Basic Info</div>' +
-        '<div class="dp-row"><span class="dp-label">Dynamic Type</span><span class="dp-value">' + (l1info.icon || '') + ' ' + (l1info.label || model.regime || '—') + '</span></div>' +
-        '<div class="dp-row"><span class="dp-label">Original Regime</span><span class="dp-value">' + (model.regime || '—') + '</span></div>' +
-        '<div class="dp-row"><span class="dp-label">Species</span><span class="dp-value">' + (model.species || '—') + '</span></div>' +
-        '<div class="dp-row"><span class="dp-label">Data Source</span><span class="dp-value">SysBio-Traj</span></div>' +
-      '</div>' +
-      '<div class="dp-section">' +
-        '<div class="dp-section-title">Data Files</div>' +
-        '<div class="dp-links">' +
-          '<a class="dp-link" href="' + hfBase + '.csv" target="_blank" title="Trajectory CSV (512 time steps)">📊 Trajectory CSV ↗</a>' +
-          '<a class="dp-link" href="' + hfBase + '.xml" target="_blank" title="SBML source model">📄 SBML XML ↗</a>' +
-          '<a class="dp-link" href="' + hfBase + '_conditions.json" target="_blank" title="Per-species regime labels">🏷 Conditions JSON ↗</a>' +
-          '<a class="dp-link" href="' + hfBase.replace('/' + model.name, '') + '/initial_conditions.json" target="_blank" title="Initial conditions">🔬 Initial Conditions ↗</a>' +
-        '</div>' +
-      '</div>' +
-      '<div class="dp-section">' +
-        '<button class="btn-predict" onclick="loadBioTrajectory(\'' + model.id + '\',\'' + model.name + '\',' + model.species + ')">📈 Load Trajectory to Prediction</button>' +
-      '</div>';
-  } else {
-    // ML 模式
-    var typeLabel = model.type === 'probabilistic' ? 'Probabilistic' : model.type === 'point' ? 'Point' : 'Zero-shot';
-    var familyName = (typeof t === 'function') ? t('family.' + model.family) : model.family;
-
-    html +=
-      '<div class="dp-header">' +
-        '<div class="dp-name">📦 ' + (model.name || '') + '</div>' +
-        '<div class="dp-id">' + (model.id || '') + '</div>' +
-      '</div>' +
-      '<div class="dp-section">' +
-        '<div class="dp-section-title">Key Parameters</div>' +
-        '<div class="dp-row"><span class="dp-label">Family</span><span class="dp-value">' + (familyName || model.family || '—') + '</span></div>' +
-        '<div class="dp-row"><span class="dp-label">Type</span><span class="dp-value">' + typeLabel + '</span></div>';
-
-    if (model.hidden_dim > 0) {
-      html +=
-        '<div class="dp-row"><span class="dp-label">Hidden Dim</span><span class="dp-value">' + model.hidden_dim + '</span></div>' +
-        '<div class="dp-row"><span class="dp-label">Layers</span><span class="dp-value">' + model.layers + '</span></div>' +
-        '<div class="dp-row"><span class="dp-label">Learning Rate</span><span class="dp-value">' + model.lr + '</span></div>';
-    } else {
-      html += '<div class="dp-row"><span class="dp-label">Pretrained</span><span class="dp-value">' + (model.pretrained || '—') + '</span></div>';
-    }
-
-    html +=
-        '<div class="dp-row"><span class="dp-label">Context Length</span><span class="dp-value">' + model.context_len + '</span></div>' +
-        '<div class="dp-row"><span class="dp-label">Prediction Length</span><span class="dp-value">' + model.pred_len + '</span></div>' +
-      '</div>';
-
-    // Metrics
-    if (model.paper_metrics && Object.keys(model.paper_metrics).length) {
-      html += '<div class="dp-section"><div class="dp-section-title">Metrics</div><div class="dp-tags">';
-      Object.entries(model.paper_metrics).forEach(function(e) {
-        html += '<span class="dp-tag regime">' + e[0] + ': ' + e[1] + '</span>';
-      });
-      html += '</div></div>';
-    }
-
-    // Features
-    var features = model.features || [];
-    if (features.length) {
-      html += '<div class="dp-section"><div class="dp-section-title">Features</div><div class="dp-tags">';
-      features.forEach(function(f) {
-        html += '<span class="dp-tag feature">' + f + '</span>';
-      });
-      html += '</div></div>';
-    }
-
-    // Description
-    if (model.description) {
-      html += '<div class="dp-section"><div class="dp-section-title">Description</div><div class="dp-desc">' + model.description + '</div></div>';
-    }
-  }
-
-  content.innerHTML = html;
-  panel.classList.add('active');
-  overlay.classList.add('active');
-}
-
-function closeDetailPanel() {
-  var panel = document.getElementById('detail-panel');
-  var overlay = document.getElementById('detail-overlay');
-  if (panel) panel.classList.remove('active');
-  if (overlay) overlay.classList.remove('active');
-
-  // 取消高亮
-  if (typeof window._bubbleSelected !== 'undefined' && window._bubbleSelected) {
-    window._bubbleSelected
-      .attr('stroke', '#ffffff')
-      .attr('stroke-width', 2.5)
-      .attr('filter', null);
-    window._bubbleSelected = null;
-  }
-}
-
-// ESC 关闭
-document.addEventListener('keydown', function(e) {
-  if (e.key === 'Escape') closeDetailPanel();
-});
