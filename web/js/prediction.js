@@ -17,7 +17,7 @@
 //   3. 本地文件打开   — file:// 协议，连接到本地 localhost:8000
 // 如需连接远程 Render 后端，将 RENDER_URL 设为你的 Render 服务地址:
 //   例如: var RENDER_URL = 'https://regimeflow-web.onrender.com';
-var RENDER_URL = '';
+var RENDER_URL = 'https://regimeflow-web.onrender.com';
 var API_BASE = (function() {
   if (RENDER_URL) return RENDER_URL;
   // 同源部署（Render 生产 / 本地 server.py）→ 使用相对路径
