@@ -1107,9 +1107,15 @@ function drawTP() {
     .style('stroke-linecap','round').style('stroke-linejoin','round');
 
   // MERGE
-  grp.merge(enter).transition(t)
+  var merged = grp.merge(enter);
+  merged.transition(t)
     .attr('transform', function(d) { return 'translate(' + d.x + ',' + d.y + ')'; })
     .style('opacity', 1);
+  // MUST update circle radii — correctBPRadii may have changed d.r,
+  // and drawTP can be called multiple times (zoom, resize, mode-switch).
+  merged.select('circle').transition(t)
+    .attr('r', function(d) { return Math.max(1.8, d.r); })
+    .attr('visibility', function(d) { return d.r < 2.5 ? 'hidden' : 'visible'; });
 
   // Post-transition: update text
   setTimeout(function() {
