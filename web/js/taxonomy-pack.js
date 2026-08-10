@@ -1349,6 +1349,12 @@ function switchTaxonomyMode(mode) {
   _tp.mode = mode;
   _tp.focus = null;
 
+  // Clear all SVG content — mode-switch means completely different
+  // data keys.  Starting fresh avoids D3 data-join weirdness where
+  // leftover taxonomy elements interfere with BP rendering.
+  _tp.g.selectAll('g.cn').remove();
+  _tp.labelOverlay.selectAll('text.tp-label').remove();
+
   // Rebuild hierarchy
   var hierarchyData = mode === 'processes' ? buildBPHierarchy() : buildHierarchy();
   _tp.root = d3.hierarchy(hierarchyData)
