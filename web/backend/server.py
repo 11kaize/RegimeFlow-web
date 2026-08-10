@@ -338,6 +338,30 @@ def _predict_fallback(
 
 # ── Routes ─────────────────────────────────────────────────────
 
+@app.get("/api/debug/ckpt")
+async def debug_ckpt():
+    """Diagnostic endpoint: show filesystem state for checkpoint discovery."""
+    import os as _os
+    cwd = str(Path.cwd())
+    proj = str(_PROJECT_ROOT)
+    candidates = {}
+    for base_name, base in [("_PROJECT_ROOT", _PROJECT_ROOT), ("cwd", Path.cwd())]:
+        for rel in ["ckpt/RegimeFlow/seed53_best.ckpt", "seed53_best.ckpt",
+                     "web/backend/ckpt/RegimeFlow/seed53_best.ckpt"]:
+            p = base / rel
+            candidates[f"{base_name}/{rel}"] = {"path": str(p), "exists": p.exists()}
+    # List repo root top-level
+    root_contents = sorted(os.listdir(str(_PROJECT_ROOT))) if _PROJECT_ROOT.exists() else []
+    return {
+        "cwd": cwd,
+        "_PROJECT_ROOT": proj,
+        "REGIMEFLOW_CKPT": REGIMEFLOW_CKPT or "(empty)",
+        "LOAD_REGIMEFLOW": LOAD_REGIMEFLOW,
+        "candidates": candidates,
+        "root_top_level": root_contents[:50],
+    }
+
+
 @app.get("/api/health", response_model=HealthResponse)
 async def health():
     return HealthResponse(
