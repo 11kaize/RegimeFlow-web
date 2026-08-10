@@ -148,6 +148,10 @@ class MambaPy(nn.Module):
         y = torch.stack(ys, dim=1)  # (B, L, D)
 
         if D is not None:
+            if not isinstance(D, torch.Tensor):
+                D = torch.tensor(D, device=device, dtype=dtype)
+            if D.dim() == 0:
+                D = D.unsqueeze(0)
             y = y + u * D.unsqueeze(0).unsqueeze(1)
 
         return y
@@ -614,11 +618,17 @@ def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"   Loading on:  {device}")
 
+    # Monkey-patch mamba_ssm BEFORE importing model (needed for model init)
+    class _FakeMambaSSM:
+        Mamba = MambaPy
+        __version__ = "2.2.6-py"
+    sys.modules['mamba_ssm'] = _FakeMambaSSM()
+
     import pytorch_lightning as pl
     from models.FlowMatching.RegimeFlow.RegimeFlow import RegimeFlowCond
 
     model = RegimeFlowCond.load_from_checkpoint(
-        checkpoint_path, map_location=device, strict=False
+        checkpoint_path, map_location=device, strict=False, weights_only=False
     )
     model.eval()
     print(f"✅ Model loaded")

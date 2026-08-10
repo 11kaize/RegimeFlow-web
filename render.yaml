@@ -3,7 +3,7 @@ services:
     name: regimeflow-web
     runtime: python
     rootDir: .
-    buildCommand: pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu && pip install --no-cache-dir -r web/backend/requirements.txt
+    buildCommand: pip install --no-cache-dir -r web/backend/requirements.txt
     startCommand: cd web/backend && python server.py
     envVars:
       - key: LOAD_CHRONOS
@@ -14,7 +14,3 @@ services:
         value: "4"
       - key: PORT
         value: "8000"
-      - key: OMP_NUM_THREADS
-        value: "1"
-      - key: MKL_NUM_THREADS
-        value: "1"

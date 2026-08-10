@@ -118,26 +118,18 @@ async def lifespan(app: FastAPI):
     """Load models on startup."""
     global regimeflow_engine, chronos_pipeline, model_info
 
-    # Memory optimization: limit PyTorch threads on CPU
-    try:
-        import torch as _torch
-        _torch.set_num_threads(1)
-        _torch.set_num_interop_threads(1)
-    except Exception:
-        pass
-
-    # 1. Try loading RegimeFlow
+    # 1. Try loading RegimeFlow (ONNX Runtime — no PyTorch needed)
     if LOAD_REGIMEFLOW and REGIMEFLOW_CKPT:
-        logger.info(f"Loading RegimeFlow from {REGIMEFLOW_CKPT} ...")
+        logger.info(f"Loading RegimeFlow ONNX from {REGIMEFLOW_CKPT} ...")
         try:
-            from web.backend.engine import init_engine
-            regimeflow_engine = init_engine(REGIMEFLOW_CKPT, denoise_steps=REGIMEFLOW_STEPS)
+            from web.backend.engine_onnx import init_engine as init_engine_onnx
+            regimeflow_engine = init_engine_onnx(REGIMEFLOW_CKPT, denoise_steps=REGIMEFLOW_STEPS)
             model_info["regimeflow_loaded"] = True
             model_info["device"] = "cpu"
-            logger.info("RegimeFlow loaded successfully")
+            logger.info("RegimeFlow ONNX loaded successfully")
         except Exception as exc:
             model_info["error"] = f"RegimeFlow: {exc}"
-            logger.error(f"Failed to load RegimeFlow: {exc}")
+            logger.error(f"Failed to load RegimeFlow ONNX: {exc}")
     else:
         logger.info("RegimeFlow disabled (LOAD_REGIMEFLOW=false or no checkpoint found)")
 
