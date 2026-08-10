@@ -118,6 +118,14 @@ async def lifespan(app: FastAPI):
     """Load models on startup."""
     global regimeflow_engine, chronos_pipeline, model_info
 
+    # Memory optimization: limit PyTorch threads on CPU
+    try:
+        import torch as _torch
+        _torch.set_num_threads(1)
+        _torch.set_num_interop_threads(1)
+    except Exception:
+        pass
+
     # 1. Try loading RegimeFlow
     if LOAD_REGIMEFLOW and REGIMEFLOW_CKPT:
         logger.info(f"Loading RegimeFlow from {REGIMEFLOW_CKPT} ...")
