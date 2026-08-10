@@ -988,6 +988,21 @@ function drawTP() {
 
   var nodes = F.descendants().filter(function(d) { return d.depth >= 1; });
 
+  // DEBUG: count nodes by depth and check radii
+  if (_tp.mode === 'processes') {
+    var d1 = nodes.filter(function(d) { return d.depth === 1; });
+    var d2 = nodes.filter(function(d) { return d.depth === 2; });
+    console.log('drawTP — depth=1:', d1.length, 'depth=2:', d2.length);
+    var smallRadii = d2.filter(function(d) { return d.r < 12; });
+    console.log('  depth=2 with r<12:', smallRadii.length, smallRadii.map(function(d) { return d.data.name + ' r=' + d.r.toFixed(1); }));
+    // Show Immune Response models specifically
+    d2.forEach(function(d) {
+      if (d.parent && d.parent.data && d.parent.data.name === 'Immune Response') {
+        console.log('  IR:', d.data.name || d.data.model.name, 'r=' + d.r.toFixed(1), 'x=' + d.x.toFixed(1), 'y=' + d.y.toFixed(1));
+      }
+    });
+  }
+
   // JOIN
   var grp = G.selectAll('g.cn').data(nodes, function(d) {
     return (d.data.model ? d.data.model.id : d.data.name) + '@' + d.depth;
