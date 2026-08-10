@@ -167,6 +167,19 @@ function correctBPRadii(root) {
   if (_tp.mode !== 'processes') return;
   if (!root || !root.children) return;
 
+  // Helper: shift children so the enclosing circle is centered at (0,0).
+  // d3.packSiblings does NOT guarantee the enclosing-circle center is at the
+  // origin — we MUST re-center manually, otherwise every child gets an
+  // unintended offset from the parent center (they drift to a corner).
+  function centerChildren(kids) {
+    if (kids.length <= 1) { kids[0].x = 0; kids[0].y = 0; return; }
+    var enc = d3.packEnclose(kids);
+    for (var i = 0; i < kids.length; i++) {
+      kids[i].x -= enc.x;
+      kids[i].y -= enc.y;
+    }
+  }
+
   root.children.forEach(function(cat) {
     var children = cat.children;
     if (!children || !children.length) return;
@@ -191,7 +204,6 @@ function correctBPRadii(root) {
 
     // ============================================================
     // 2. Enforce absolute minimum child radius
-    //    Ensures model bubbles are always large enough to see & click
     // ============================================================
     var absMinChildR = 28;
     children.forEach(function(ch) {
@@ -199,44 +211,40 @@ function correctBPRadii(root) {
     });
 
     // ============================================================
-    // 3. Re-pack children, then tighten parent around them if possible
+    // 3. Re-pack children, keep them centred inside the parent
     // ============================================================
     if (children.length >= 2) {
       d3.packSiblings(children);
+      centerChildren(children);               // ← CRITICAL: centre at origin
 
-      // Compute actual extent needed to enclose all children
       var maxExtent = 0;
       children.forEach(function(ch) {
         var dist = Math.sqrt(ch.x * ch.x + ch.y * ch.y) + ch.r;
         if (dist > maxExtent) maxExtent = dist;
       });
 
-      var margin = 1.05; // 5% margin inside parent
+      var margin = 1.05;
       if (maxExtent * margin < cat.r) {
-        // Children fit compactly — shrink parent to hug them tighter
         cat.r = Math.max(minR, maxExtent * margin);
       } else if (maxExtent > cat.r * 0.96) {
-        // Children overflow — shrink them to fit
         var shrink = (cat.r * 0.96) / maxExtent;
         children.forEach(function(ch) {
           ch.r = Math.max(absMinChildR, ch.r * shrink);
           ch.x *= shrink;
           ch.y *= shrink;
         });
-        // Re-pack after shrinking
         d3.packSiblings(children);
+        centerChildren(children);             // ← re-centre after re-pack
       }
     } else if (children.length === 1) {
       children[0].x = 0;
       children[0].y = 0;
       // Ensure parent has a clickable ring around the single child
-      // (must be strictly larger so the parent circle is reachable by click)
       var idealR = Math.max(minR, children[0].r * 1.30);
       cat.r = Math.max(cat.r, idealR);
     }
 
-
-    // Offset children to parent center
+    // Offset children to parent absolute centre
     children.forEach(function(ch) {
       ch.x += cat.x;
       ch.y += cat.y;
