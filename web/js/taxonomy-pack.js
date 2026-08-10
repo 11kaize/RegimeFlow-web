@@ -235,15 +235,6 @@ function correctBPRadii(root) {
       cat.r = Math.max(cat.r, idealR);
     }
 
-    // Sanity check: ensure parent radius exceeds the extent of all children
-    // so a clickable ring is always visible (critical for small-n categories)
-    var childExtent = 0;
-    children.forEach(function(ch) {
-      var dist = Math.sqrt(ch.x * ch.x + ch.y * ch.y) + ch.r;
-      if (dist > childExtent) childExtent = dist;
-    });
-    var minClickableR = Math.max(minR, childExtent * 1.18);
-    if (cat.r < minClickableR) cat.r = minClickableR;
 
     // Offset children to parent center
     children.forEach(function(ch) {
