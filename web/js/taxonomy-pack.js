@@ -166,17 +166,33 @@ function buildBPHierarchy() {
 function correctBPRadii(root) {
   if (_tp.mode !== 'processes') return;
   if (!root || !root.children) return;
+  // TEMPORARY: set to false to skip correction & see raw pack layout
+  var APPLY = true;
+  if (!APPLY) {
+    console.log('correctBPRadii SKIPPED — showing raw d3.pack layout');
+    return;
+  }
 
   // Helper: shift children so the enclosing circle is centered at (0,0).
-  // d3.packSiblings does NOT guarantee the enclosing-circle center is at the
-  // origin — we MUST re-center manually, otherwise every child gets an
-  // unintended offset from the parent center (they drift to a corner).
+  // d3.packSiblings spreads children around an arbitrary origin — we MUST
+  // re-centre manually, otherwise every child drifts to a corner of the parent.
   function centerChildren(kids) {
     if (kids.length <= 1) { kids[0].x = 0; kids[0].y = 0; return; }
-    var enc = d3.packEnclose(kids);
+    // Compute the bounding-box centre of all children (reliable, no ext API)
+    var x0 =  Infinity, y0 =  Infinity;
+    var x1 = -Infinity, y1 = -Infinity;
     for (var i = 0; i < kids.length; i++) {
-      kids[i].x -= enc.x;
-      kids[i].y -= enc.y;
+      var ch = kids[i];
+      if (ch.x - ch.r < x0) x0 = ch.x - ch.r;
+      if (ch.y - ch.r < y0) y0 = ch.y - ch.r;
+      if (ch.x + ch.r > x1) x1 = ch.x + ch.r;
+      if (ch.y + ch.r > y1) y1 = ch.y + ch.r;
+    }
+    var cx = (x0 + x1) / 2;
+    var cy = (y0 + y1) / 2;
+    for (var i = 0; i < kids.length; i++) {
+      kids[i].x -= cx;
+      kids[i].y -= cy;
     }
   }
 
@@ -214,8 +230,17 @@ function correctBPRadii(root) {
     // 3. Re-pack children, keep them centred inside the parent
     // ============================================================
     if (children.length >= 2) {
+      console.log('BEFORE packSiblings — cat:', cat.data.name, 'cat.r:', cat.r.toFixed(1),
+        'cat.x:', cat.x.toFixed(1), 'cat.y:', cat.y.toFixed(1),
+        'ch0.x:', children[0].x.toFixed(1), 'ch0.y:', children[0].y.toFixed(1));
+
       d3.packSiblings(children);
+
+      console.log('AFTER packSiblings — ch0.x:', children[0].x.toFixed(1), 'ch0.y:', children[0].y.toFixed(1));
+
       centerChildren(children);               // ← CRITICAL: centre at origin
+
+      console.log('AFTER centerChildren — ch0.x:', children[0].x.toFixed(1), 'ch0.y:', children[0].y.toFixed(1));
 
       var maxExtent = 0;
       children.forEach(function(ch) {
@@ -249,6 +274,11 @@ function correctBPRadii(root) {
       ch.x += cat.x;
       ch.y += cat.y;
     });
+    if (n >= 2) {
+      console.log('AFTER offset — ch0.x:', children[0].x.toFixed(1), 'ch0.y:', children[0].y.toFixed(1),
+        'cat.x:', cat.x.toFixed(1), 'cat.y:', cat.y.toFixed(1),
+        'diff:', (children[0].x - cat.x).toFixed(1), (children[0].y - cat.y).toFixed(1));
+    }
   });
 }
 
