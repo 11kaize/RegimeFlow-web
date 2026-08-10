@@ -2,11 +2,15 @@ services:
   - type: web
     name: regimeflow-web
     runtime: python
-    rootDir: web/backend
-    buildCommand: pip install -r requirements.txt
-    startCommand: python server.py
+    rootDir: .
+    buildCommand: pip install -r web/backend/requirements.txt
+    startCommand: cd web/backend && python server.py
     envVars:
       - key: LOAD_CHRONOS
         value: "false"
+      - key: LOAD_REGIMEFLOW
+        value: "true"
+      - key: REGIMEFLOW_STEPS
+        value: "4"
       - key: PORT
         value: "8000"

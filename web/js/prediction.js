@@ -33,19 +33,118 @@ var _pwState = {
   spIdx:         0,       // species index
   spNames:       [],      // species names from loaded CSV
   ctxLen:        96,      // context length
-  ctxData:       null,    // context data array
-  gtData:        null,    // ground-truth data array
+  ctxData:       null,    // context data array (current species)
+  gtData:        null,    // ground-truth data array (current species)
   gtTime:        null,    // ground-truth time array
   ctxTime:       null,    // context time array
+  fullColumns:   null,    // all parsed CSV columns (cached for species switching)
+  fullTime:      null,    // full time array from CSV
   currentModel:  null,    // currently loaded pathway model
   loading:       false
 };
 
-var _backendStatus = { chronos_loaded: false, device: 'cpu' };
+var _backendStatus = { regimeflow_loaded: false, chronos_loaded: false, device: 'cpu', denoise_steps: 0 };
 var _bioTrajectoryLoaded = false;  // legacy flag for backward compat
+var _failedModels = {};  // key: 'pi-mi' → true for models that returned 404/500
+var _activeViewMode = 'pathway';  // 'pathway' | 'bio' — which view currently owns the chart
+
+// ================================================================
+// ChartError — clean error-state overlay for the prediction chart
+// ================================================================
+var ChartError = (function() {
+  'use strict';
+
+  function _clearDOM() {
+    var old = document.getElementById('chart-error-state');
+    if (old) old.remove();
+  }
+
+  function _clearECharts() {
+    if (!window._predictChart) return;
+    window._predictChart.setOption({
+      backgroundColor: 'transparent',
+      title: { text: '' },
+      xAxis: { show: false },
+      yAxis: { show: false },
+      series: [],
+      animation: false
+    }, true);
+  }
+
+  function show(model, errMessage) {
+    var el = document.getElementById('predict-chart');
+    if (!el) return;
+
+    _clearDOM();
+    _clearECharts();
+    // Hide legend guide on error
+    var guide = document.getElementById('chart-legend-guide');
+    if (guide) guide.style.display = 'none';
+
+    var overlay = document.createElement('div');
+    overlay.className = 'chart-error-state';
+    overlay.id = 'chart-error-state';
+
+    var detail = errMessage || 'Unknown error';
+    var is404 = detail.indexOf('404') !== -1;
+    var icon = is404 ? '📭' : '⚠';
+    var title = is404
+      ? 'Data not available for ' + model.name
+      : 'Failed to load ' + model.name;
+    var hint = is404
+      ? 'This model\'s trajectory data is not yet available<br>in the HuggingFace dataset.'
+      : 'An unexpected error occurred while fetching<br>the trajectory data.';
+
+    overlay.innerHTML =
+      '<div class="chart-error-inner">' +
+        '<div class="chart-error-icon">' + icon + '</div>' +
+        '<div class="chart-error-title">' + title + '</div>' +
+        '<div class="chart-error-detail">' +
+          hint +
+          '<br><code>' + detail.replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</code>' +
+        '</div>' +
+        '<div class="chart-error-retry" onclick="retryCurrentModel()">↻ Try again</div>' +
+      '</div>';
+
+    el.appendChild(overlay);
+  }
+
+  function clear() {
+    _clearDOM();
+  }
+
+  return { show: show, clear: clear };
+})();
+
+// ── Retry helper (exposed globally for onclick) ──────────────────
+function retryCurrentModel() {
+  if (_pwState.currentModel) {
+    ChartError.clear();
+    loadPathwayTrajectory(_pwState.currentModel);
+  }
+}
 
 // ── i18n helpers ────────────────────────────────────────────────
 function _pwSysName(m) { return m.name; }
+
+// ── Error badge helpers ──────────────────────────────────────────
+function markModelFailed(pi, mi) {
+  var key = pi + '-' + mi;
+  _failedModels[key] = true;
+  var badge = document.getElementById('pw-errbadge-' + pi + '-' + mi);
+  if (badge) badge.classList.add('visible');
+  var item = document.getElementById('pw-model-' + pi + '-' + mi);
+  if (item) item.classList.add('has-error');
+}
+
+function markModelOk(pi, mi) {
+  var key = pi + '-' + mi;
+  delete _failedModels[key];
+  var badge = document.getElementById('pw-errbadge-' + pi + '-' + mi);
+  if (badge) badge.classList.remove('visible');
+  var item = document.getElementById('pw-model-' + pi + '-' + mi);
+  if (item) item.classList.remove('has-error');
+}
 
 // ================================================================
 // initPrediction — entry point
@@ -89,6 +188,7 @@ function initPrediction() {
       var l1def = REGIME_L1_DEFS[l1] || {};
       mel.innerHTML =
         '<span class="pw-model-name">' + m.name + '</span>' +
+        '<span class="pw-model-error-badge" id="pw-errbadge-' + pi + '-' + mi + '">⚠</span>' +
         '<span class="pw-model-id">' + m.id + '</span>' +
         '<span class="pw-model-tag" style="color:' + (l1def.color||'#8899aa') + '">' + (l1def.icon||'') + ' ' + (l1def.label||m.regime) + '</span>' +
         (m.note ? '<span class="pw-model-note" title="' + m.note.replace(/"/g,'&quot;') + '">' + m.note + '</span>' : '');
@@ -112,8 +212,16 @@ function initPrediction() {
   if (selEl) {
     selEl.innerHTML = '<option value="0">— Select a model first —</option>';
     selEl.addEventListener('change', function() {
-      _pwState.spIdx = parseInt(selEl.value) || 0;
-      redrawPathwayChart();
+      var spIdx = parseInt(selEl.value) || 0;
+      if (_activeViewMode === 'bio') {
+        // Multi-line view: highlight one species, dim others
+        _bioChartState.selSpIdx = spIdx;
+        highlightBioSpecies(spIdx);
+      } else {
+        // Single-species pathway view: switch to that species
+        _pwState.spIdx = spIdx;
+        redrawPathwayChart();
+      }
     });
   }
 
@@ -191,6 +299,9 @@ function selectPathwayModel(pi, mi) {
   var model = PATHWAY_MODELS[pi].models[mi];
   _pwState.currentModel = model;
 
+  // Clear any previous error state before loading new model
+  ChartError.clear();
+
   // Highlight
   document.querySelectorAll('.pw-model-item').forEach(function(el) { el.classList.remove('active'); });
   var mel = document.getElementById('pw-model-' + pi + '-' + mi);
@@ -215,6 +326,11 @@ function selectPathwayModel(pi, mi) {
 function loadPathwayTrajectory(model) {
   if (_pwState.loading) return;
   _pwState.loading = true;
+
+  _activeViewMode = 'pathway';
+
+  // Clear any stale error overlay before loading
+  ChartError.clear();
 
   // Update sidebar note
   var noteEl = document.querySelector('.sidebar-note');
@@ -253,6 +369,8 @@ function loadPathwayTrajectory(model) {
 
     _pwState.spNames = spNames;
     _pwState.ctxLen  = Math.min(96, Math.floor(timeLen * 0.25));
+    _pwState.fullColumns = columns;  // cache for species switching
+    _pwState.fullTime    = time;
 
     // Split: first ctxLen points = context, rest = ground truth
     var ctxLen  = _pwState.ctxLen;
@@ -271,6 +389,10 @@ function loadPathwayTrajectory(model) {
     _pwState.gtTime  = gtTime;
     _pwState.gtData  = gtData;
     _pwState.loading = false;
+
+    // Clear error badge on success
+    markModelOk(_pwState.pathwayIdx, _pwState.modelIdx);
+    ChartError.clear();
 
     // Populate species selector
     var selEl = document.getElementById('species-select');
@@ -299,25 +421,25 @@ function loadPathwayTrajectory(model) {
       setTimeout(function() {
         drawChart(ctxTime, ctxData, gtTime, gtData, null, spName, model.name);
         // Attempt prediction (placeholder until weights arrive)
-        attemptPrediction(ctxData, ctxTime, gtTime, gtData, spName, model.name);
+        attemptPrediction(ctxData, ctxTime, gtTime, gtData, spName, model.name, model.regime);
       }, 100);
     });
 
   }).catch(function(err) {
     _pwState.loading = false;
     console.error('Failed to load trajectory:', err);
-    ChartSkeleton.clear();
-    var chartEl = document.getElementById('predict-chart');
-    if (chartEl) {
-      var errDiv = document.createElement('div');
-      errDiv.className = 'chart-skeleton';
-      errDiv.innerHTML =
-        '<div style="display:flex;align-items:center;justify-content:center;height:100%;text-align:center;">' +
-          '<div><span style="font-size:48px;">⚠</span><br>' +
-          '<span style="color:#E74C3C;font-size:15px;font-weight:600;">Failed to load ' + model.name + '</span><br>' +
-          '<span style="color:#6a8299;font-size:12px;">' + err.message + '</span></div></div>';
-      chartEl.appendChild(errDiv);
-    }
+
+    // Mark model as failed in sidebar
+    markModelFailed(_pwState.pathwayIdx, _pwState.modelIdx);
+
+    // Let skeleton show for minimum time, then transition to error state
+    ChartSkeleton.ensureMin(function() {
+      ChartSkeleton.hide();
+      setTimeout(function() {
+        ChartError.show(model, err.message);
+      }, 200);
+    });
+
     if (noteEl) {
       noteEl.innerHTML = '❌ Failed to load ' + model.name;
       noteEl.style.background = 'var(--color-tag-red, #301a1a)';
@@ -327,54 +449,82 @@ function loadPathwayTrajectory(model) {
   });
 }
 
+// ── Regime pattern mapping (for RegimeFlow backend) ────────────
+var REGIME_TO_PATTERN = {
+  directly_stable: 0,
+  inc_stable:      1,
+  dec_stable:      2,
+  oscillation:     3,
+  increasing:      4,
+  decreasing:      5
+};
+
 // ================================================================
-// Prediction attempt (placeholder until AI weights arrive)
+// Prediction attempt
 // ================================================================
-function attemptPrediction(ctxData, ctxTime, gtTime, gtData, spName, modelName) {
-  if (!API_BASE) {
-    // Production: try API
-    fetch(API_BASE + '/api/predict', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ context: ctxData, prediction_length: Math.min(256, gtData.length) })
-    }).then(function(r) {
-      if (!r.ok) throw new Error('API error');
-      return r.json();
-    }).then(function(result) {
-      // Got prediction — overlay on chart
-      drawChart(ctxTime, ctxData, gtTime, gtData, result, spName, modelName);
-    }).catch(function() {
-      // No weights yet — show placeholder
-      drawChart(ctxTime, ctxData, gtTime, gtData, { _pending: true }, spName, modelName);
-    });
-  } else {
-    // Local dev: also try but expect failure
-    fetch(API_BASE + '/api/predict', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ context: ctxData, prediction_length: Math.min(256, gtData.length) })
-    }).then(function(r) {
-      if (!r.ok) throw new Error('API error');
-      return r.json();
-    }).then(function(result) {
-      drawChart(ctxTime, ctxData, gtTime, gtData, result, spName, modelName);
-    }).catch(function() {
-      drawChart(ctxTime, ctxData, gtTime, gtData, { _pending: true }, spName, modelName);
-    });
-  }
+function attemptPrediction(ctxData, ctxTime, gtTime, gtData, spName, modelName, modelRegime) {
+  // Determine regime conditions from model metadata
+  var pattern = REGIME_TO_PATTERN[modelRegime] || 0;
+  var period = (modelRegime === 'oscillation') ? 12.5 : 0.0;
+
+  var reqBody = {
+    context: ctxData,
+    prediction_length: Math.min(256, gtData.length),
+    traj_pattern: pattern,
+    period: period
+  };
+
+  fetch(API_BASE + '/api/predict', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(reqBody)
+  }).then(function(r) {
+    if (!r.ok) throw new Error('API error');
+    return r.json();
+  }).then(function(result) {
+    drawChart(ctxTime, ctxData, gtTime, gtData, result, spName, modelName);
+  }).catch(function() {
+    drawChart(ctxTime, ctxData, gtTime, gtData, { _pending: true }, spName, modelName);
+  });
 }
 
 // ================================================================
 // Redraw chart on species change
 // ================================================================
 function redrawPathwayChart() {
-  if (!_pwState.currentModel || !_pwState.ctxData) return;
-  var model  = _pwState.currentModel;
-  var spIdx  = _pwState.spIdx;
-  var spName = _pwState.spNames[spIdx] || 'Species ' + spIdx;
+  if (!_pwState.currentModel || !_pwState.fullColumns) return;
 
-  // We need the full data — cheap way: re-fetch
-  loadPathwayTrajectory(model);
+  var model   = _pwState.currentModel;
+  var spIdx   = _pwState.spIdx;
+  var spNames = _pwState.spNames;
+  if (spIdx >= spNames.length) spIdx = 0;
+
+  var spName  = spNames[spIdx];
+  var columns = _pwState.fullColumns;
+  var time    = _pwState.fullTime;
+  var ctxLen  = _pwState.ctxLen;
+
+  // Slice from cached columns — no network re-fetch
+  var spData  = columns[spName];
+  if (!spData) return;
+
+  var ctxTime = time.slice(0, ctxLen);
+  var ctxData = spData.slice(0, ctxLen);
+  var gtTime  = time.slice(ctxLen);
+  var gtData  = spData.slice(ctxLen);
+
+  _pwState.ctxTime = ctxTime;
+  _pwState.ctxData = ctxData;
+  _pwState.gtTime  = gtTime;
+  _pwState.gtData  = gtData;
+
+  // Update selector to reflect current species (without triggering re-render)
+  var selEl = document.getElementById('species-select');
+  if (selEl) selEl.value = spIdx;
+
+  // Update chart immediately
+  drawChart(ctxTime, ctxData, gtTime, gtData, null, spName, model.name);
+  attemptPrediction(ctxData, ctxTime, gtTime, gtData, spName, model.name, model.regime);
 }
 
 // Skeleton Screen: see js/components/skeleton.js (ChartSkeleton API)
@@ -471,6 +621,10 @@ function drawChart(ctxTime, ctxData, gtTime, gtData, apiResult, spName, sysName)
     ? '⚠ Prediction pending — waiting for AI model weights'
     : 'Context: ' + ctxData.length + ' pts  ·  Ground Truth: ' + gtData.length + ' pts';
 
+  // Show legend guide strip
+  var guide = document.getElementById('chart-legend-guide');
+  if (guide) guide.style.display = '';
+
   window._predictChart.setOption({
     backgroundColor: 'transparent',
     animationDuration: 600,
@@ -511,7 +665,7 @@ function drawChart(ctxTime, ctxData, gtTime, gtData, apiResult, spName, sysName)
       splitLine: { lineStyle: { color: '#1a2a3a' } }
     },
     series: series
-  });
+  }, true);  // notMerge — clear any stale series from previous renders
 }
 
 // ================================================================
@@ -583,6 +737,64 @@ function handleCustomPredict() {
     statusEl.textContent = 'Backend unavailable · showing ground truth only';
     statusEl.className = 'custom-status error';
   });
+}
+
+// ================================================================
+// highlightBioSpecies — dim all series except the selected one
+// ================================================================
+function highlightBioSpecies(spIdx) {
+  var state = window._bioChartState;
+  if (!state || !window._predictChart) return;
+
+  // If species is outside visible top-N, force-expand first
+  if (!state.expanded && state.needsExpand && spIdx >= state.topNames.length) {
+    state.selSpIdx = spIdx;
+    renderBioChart(true);
+    return;
+  }
+
+  state.selSpIdx = spIdx;
+  var allSeries = state.allSeries;
+  var palette = state.palette;
+  var topNames = state.topNames;
+  var expanded = state.expanded;
+
+  // Only include currently visible series (respect expand/collapse)
+  var visibleIndices = [];
+  for (var i = 0; i < allSeries.length; i++) {
+    if (expanded || !state.needsExpand || i < topNames.length) {
+      visibleIndices.push(i);
+    }
+  }
+
+  var highlighted = [];
+  for (var vi = 0; vi < visibleIndices.length; vi++) {
+    var i = visibleIndices[vi];
+    var s = allSeries[i];
+    var isSel = (i === spIdx);
+    var clone = {
+      name: s.name,
+      type: s.type,
+      data: s.data,
+      symbol: s.symbol,
+      smooth: s.smooth,
+      z: isSel ? 10 : 0,
+      lineStyle: {
+        color: palette[i % palette.length],
+        width: isSel ? 3 : 0.8,
+        opacity: isSel ? 1 : 0.06
+      },
+      itemStyle: {
+        color: palette[i % palette.length],
+        opacity: isSel ? 1 : 0.06
+      }
+    };
+    highlighted.push(clone);
+  }
+
+  window._predictChart.setOption({
+    series: highlighted
+  });  // merge mode — only updates series
 }
 
 // ================================================================
@@ -688,6 +900,10 @@ function renderBioChart(expanded) {
         ],
         series: chartSeries
       }, true);  // notMerge — clean replace for expand/collapse
+      // Re-apply species highlight if one is selected
+      if (state.selSpIdx >= 0) {
+        highlightBioSpecies(state.selSpIdx);
+      }
       _bindLegendToggle();
     }, 100);
   });
@@ -720,6 +936,7 @@ function _bindLegendToggle() {
 // ================================================================
 function loadBioTrajectory(modelId, modelName, speciesCount) {
   _bioTrajectoryLoaded = true;
+  _activeViewMode = 'bio';
 
   // Switch to prediction view
   document.querySelectorAll('.nav-btn').forEach(function(b) { b.classList.remove('active'); });
@@ -835,7 +1052,8 @@ function loadBioTrajectory(modelId, modelName, speciesCount) {
       topNames: topNames, totalSpecies: totalSpecies,
       needsExpand: needsExpand, expanded: false,
       yMin: allMin - yPad, yMax: allMax + yPad,
-      speciesMeta: speciesMeta, palette: palette
+      speciesMeta: speciesMeta, palette: palette,
+      selSpIdx: -1  // -1 = show all, otherwise highlight this species
     };
 
     // If small model → show all immediately; if large → show top N first
@@ -843,9 +1061,13 @@ function loadBioTrajectory(modelId, modelName, speciesCount) {
 
   var selEl = document.getElementById('species-select');
   if (selEl) {
-    selEl.innerHTML = speciesNames.map(function(n, i) {
-      return '<option value="' + i + '">' + n + '</option>';
-    }).join('');
+    var prevVal = selEl.value;
+    selEl.innerHTML = '<option value="-1">— All species —</option>' +
+      speciesNames.map(function(n, i) {
+        return '<option value="' + i + '">' + n + '</option>';
+      }).join('');
+    // Restore previous selection or default to "All species"
+    selEl.value = (prevVal && parseInt(prevVal) >= 0) ? prevVal : '-1';
   }
 
   var tagEl = document.getElementById('regime-tag');
@@ -868,13 +1090,20 @@ function loadBioTrajectory(modelId, modelName, speciesCount) {
 function updateSidebarNote() {
   var noteEl = document.querySelector('.sidebar-note');
   if (!noteEl) return;
-  if (_backendStatus.chronos_loaded) {
+  if (_backendStatus.regimeflow_loaded) {
+    noteEl.innerHTML = '🧠 RegimeFlow ready' +
+      '<br><span style="font-size:10px;">' + _backendStatus.device +
+      ' · ' + _backendStatus.denoise_steps + ' denoise steps</span>';
+    noteEl.style.background = '#1a2a20';
+    noteEl.style.borderColor = '#2a4a30';
+    noteEl.style.color = '#88aa88';
+  } else if (_backendStatus.chronos_loaded) {
     noteEl.innerHTML = '✅ Chronos-Bolt ready on ' + _backendStatus.device;
     noteEl.style.background = '#1a2a20';
     noteEl.style.borderColor = '#2a4a30';
     noteEl.style.color = '#88aa88';
   } else {
-    noteEl.innerHTML = '🔮 AI weights pending<br><span style="font-size:10px;">Trajectory browsing available now</span>';
+    noteEl.innerHTML = '🔮 No model loaded<br><span style="font-size:10px;">Trajectory browsing available</span>';
     noteEl.style.background = 'var(--color-tag-yellow, #1a1a0a)';
     noteEl.style.borderColor = '#332e15';
     noteEl.style.color = '#998844';

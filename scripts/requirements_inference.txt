@@ -1,0 +1,22 @@
+# RegimeFlow Inference Dependencies (CPU)
+# Install: pip install -r scripts/requirements_inference.txt
+
+# ── Core ──
+torch>=2.0.0
+numpy>=1.24.0
+pytorch-lightning>=2.0.0
+
+# ── Model architecture ──
+einops>=0.8.0
+torchtyping>=0.1.5
+typeguard>=2.13.0
+
+# ── ODE solver (only for training; num_steps=1 doesn't use ODE solver) ──
+# torchdyn>=1.0.0  # optional
+
+# ── ONNX (for export) ──
+# onnx>=1.14.0
+# onnxruntime>=1.16.0
+
+# ── Visualization (for demo) ──
+matplotlib>=3.5.0

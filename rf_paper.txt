@@ -1,0 +1,8629 @@
+A Regime-Aware Trajectory Prediction Framework for 1000+ Systems Biology Models
+
+Heng Rao 1 Jason Zipeng Zhang 2 Yu Gu 1 Zhenghao Liu 1 Ge Yu 1 Jeffrey Su 3 Yang Cao 4 Fan Yang 2 Minghan Chen 2
+
+Abstract
+Predicting long-horizon trajectories of biological dynamical systems remains challenging due to substantial system heterogeneity. Most existing machine learning approaches are systemspecific, requiring retraining for each new system and exhibiting limited generalization across distinct biological regimes. To address this limitation, we create a large-scale benchmark of over 1,000 ODE-based systems biology models spanning diverse organisms, biological processes, and dynamical behaviors. Building on this benchmark, we propose a regime-aware trajectory prediction framework that enables cross-system generalization and uncertainty quantification for unseen systems. Our approach introduces structured initial states derived from biological regime priors, such as growth trends and oscillatory rhythms, into conditional flow matching, replacing the standard Gaussian source distribution. We provide theoretical justification for this initialization and empirically demonstrate state-of-the-art accuracy (31% MAE reduction), well-calibrated uncertainty (17% CRPS improvement), and efficient long-horizon inference across the benchmark.
+1. Introduction
+Predicting trajectories of biological dynamical systems is fundamental for understanding complex biological pro-
+1College of Computer Science and Engineering, Northeastern University, Shenyang, Liaoning, China 2Department of Computer Science, Wake Forest University, Winston-Salem, NC, USA 3School of Computer Science, College of Computing, Georgia Institute of Technology, Atlanta, GA, USA 4Department of Computer Science, Virginia Polytechnic Institute and State University, Blacksburg, VA, USA. Correspondence to: Yu Gu <guyu@mail.neu.edu.cn>, Minghan Chen <chenm@wfu.edu>.
+Proceedings of the 43 rd International Conference on Machine Learning, Seoul, South Korea. PMLR 306, 2026. Copyright 2026 by the author(s).
+
+Sacch.. 1
+
+Aplys.. 1
+
+Mycob.. 1
+
+Helico.. 2
+
+Oryct.. 1
+
+Dictyos..
+
+Gallu.. 1
+
+Influ.. 1
+
+Equus.. 1
+
+Bos tau..
+
+Human ..
+
+5
+
+3 Eukaryota
+
+Crice.. 1
+
+Spodo.. 1
+
+23
+
+Chordata 8
+
+Verteb.. 3
+
+Badha.. 1
+
+4
+
+Severe..
+
+Lyssa..
+
+2
+
+1
+
+Mammalia
+
+Amnio..
+
+64
+
+1
+
+Nicot..
+
+1
+
+SaccharomycesR..attus norveg..
+
+Canis..
+
+1 Xenopus lae..
+
+Pseud.. 1
+
+27
+
+70
+
+44
+
+Leishma..
+
+4
+
+Octod.. 1
+
+Opistho.. 4
+
+Embryo.. 2
+
+Influenz.. 6
+
+Homo sapiens 352
+
+Unspecified 117
+
+Bacte..
+
+1
+
+Viridipla..
+
+Danio..
+
+14
+
+1
+
+Armora.. 2
+
+Sacch.. 1
+
+Bacillu.. 5
+
+Neoga..
+
+Drosophil..
+
+Hepac.. 1
+
+11
+
+1
+
+Escherichia..
+
+Metazo.. 2
+
+23
+
+Crice..
+1
+Arabidopsis..
+
+Mus musculus
+
+28
+
+Neuros..
+
+3
+
+Vesic..
+
+Ostreo.. 2
+
+cellular organ..
+
+89
+
+1
+
+Aves 4
+
+Other.. 1
+Macac.. 1
+
+Escher.. 2
+
+57
+
+Mycoba..
+
+Murinae .. 7
+
+Lactoc.. 3
+
+2
+
+Trypanoso..Amphibi..
+
+10
+
+4
+
+Schizos.. 4
+
+Caulob.. 2
+
+Cavia.. 1
+
+Roden.. 1
+
+Other .. 2
+
+Chlam.. 1
+
+Bordet..
+
+2
+
+Lutzi..
+
+Influ.. 1
+
+Thymu..
+
+1
+
+1
+
+Lolig..
+
+1
+
+Taxonomic Composition
+
+Diversity of Biological Process Cross-System Generalization
+
+Figure 1. Diversity of SysBio-Traj across 1,050 biological models. Left: Taxonomic composition shows broad organism coverage (circle size indicates model count). Top Right: Gene Ontology biological process coverage (text size indicates model count). Bottom Right: Illustration of cross-system generalization task.
+
+cesses (Ideker et al., 2001; Kitano, 2002), and these systems are traditionally modeled using ordinary differential equations (ODEs). While classical numerical solvers provide rigorous trajectory integration (Hairer & Wanner, 1996), they are hindered by high simulation costs and require explicit biological equations and ODE parameters that are usually incomplete, hypothetical, or difficult to specify in real-world biological discovery (Course & Nair, 2023). The advent of scientific machine learning has offered a promising alternative, with architectures such as Neural ODEs (Chen et al., 2018) and Neural Operators (Li et al., 2020) capable of approximating complex dynamics directly from observational data. However, these data-driven approaches are predominantly system-specific, trained to fit a single dynamical system and unable to generalize across heterogeneous biological systems (Vasiliauskaite & Antulov-Fantulin, 2024; Klo¨tergens et al., 2025). This limitation becomes particularly prohibitive in large-scale settings involving thousands of biological systems (See our benchmark diversity in Figure 1), where per-system retraining is impractical. Consequently, a unified model is needed to handle trajectory prediction across heterogeneous biological systems.
+To address the lack of scalability and transferability in system-specific models, general purpose time-series fore-
+
+1
+
+A Regime-Aware Trajectory Prediction Framework for 1000+ Systems Biology Models
+
+casting architectures, such as Transformers (Liu et al., 2023; Zeng et al., 2023) and Mamba (Gu & Dao, 2024), have emerged as powerful system-agnostic tools to learn across heterogeneous datasets. While these approaches improve scalability, they are typically deterministic and produce point forecasts. Recent generative modeling paradigms, including diffusion models and flow matching approaches (Kollovieh et al., 2023; 2024), have been introduced to enable uncertainty quantification of trajectory prediction. Despite these advances, both deterministic and generative methods remain limited in long-horizon forecasting, as different future trajectories may share similar observed history, making the mapping from past to future ambiguous. Moreover, they may generate trajectories against known macroscopic behaviors, referred to as biological regimes. For example, irreversible disease progression exhibits monotonic dynamics; cell-cycle processes require sustained oscillations. This reflects a lack of biological inductive biases that enforce plausible dynamical regimes.
+Motivated by these challenges, we propose a regime-aware trajectory prediction framework (RegimeFlow, see Figure 2), a unified architecture designed to master the diverse landscape of biological dynamics. Our key insight is that, despite massive heterogeneity, biological systems are not arbitrary but exhibit characteristic macroscopic behaviors (e.g., stable, monotonic, or oscillatory patterns) (Andrews et al., 2024; Tyson et al., 2003). Leveraging this, regime-level information is encoded directly in the generative prior, reducing reliance on heuristic regularization. Specifically, we construct regime-aware source distributions using Bayesian linear regression, initializing generation from biologically plausible states rather than isotropic Gaussian noise. This design significantly reduces the optimal transport distance between the source and target distributions, simplifying the learning process. To handle long-horizon dependencies, we employ a linear-complexity state-space backbone (Gu & Dao, 2024), modulated by adaptive conditioning to dynamically align the vector field with regime characteristics while preserving cross-system generalization. We evaluate RegimeFlow on a large collection of real-world biological systems (Figure 1), assessing its ability to generalize in long-horizon trajectory prediction with uncertainty quantification.
+Our contributions are summarized as follows:
+· We construct SysBio-Traj, a benchmark of 1,050 ODEbased biological systems spanning diverse organisms and pathways, and standardize it in a unified Python framework to support scalable evaluation of AI methods for systems biology.
+· We propose RegimeFlow, a regime-aware trajectory prediction framework that encodes biological regime information through structural priors and adaptive con-
+
+ditioning, enabling robust cross-system generalization with long-horizon uncertainty quantification.
+· We provide theoretical justification and empirical evidence that regime-aware prior initialization yields a favorable starting distribution for conditional flow matching, leading to state-of-the-art accuracy (31% MAE reduction), well-calibrated uncertainty (17% CRPS improvement), and efficient long-horizon inference.
+The resulting SysBio-Traj benchmark is publicly available at https://huggingface.co/datasets/Heng Rao/SysBio-Traj, and the RegimeFlow codebase and configurations are available at https://github.com /hengrao02/RegimeFlow.
+2. Related Work
+2.1. Point Forecasting in Time Series
+Advancements in time-series forecasting have produced a diverse family of architectures, each navigating the fundamental trade-off between model expressivity and computational efficiency. High-capacity Transformer-based models (Nie, 2022; Liu et al., 2022; 2023) excel at capturing long-range dependencies through attention mechanisms, but this flexibility often incurs substantial computational and memory overhead, particularly for long sequences (Kim et al., 2025). In contrast, MLP-based models (Zeng et al., 2023; Ekambaram et al., 2023; Wang et al., 2024a) emphasize architectural simplicity and efficiency, though often at the expense of representational power. More recently, State Space Models (SSMs) (Liang et al., 2024; Ahamed & Cheng, 2024; Wang et al., 2025) have emerged as an effective middle ground. By leveraging linear recurrence, they achieve linear-time complexity while retaining the ability to model long-context dependencies (Liu et al., 2025a; Mei et al., 2025). Despite their success in general domains, these approaches face two challenges in biological contexts. First, they are inherently deterministic, producing single-point forecasts without predictive uncertainty that is essential for biological decision-making. Second, they struggle in long-horizon extrapolation under distribution shifts and sparse observations, which further degrade performance when transferring across heterogeneous biological systems.
+2.2. Probabilistic Forecasting with Generative Models
+Generative modeling has evolved significantly, progressing from the foundational architectures of GANs and VAEs (Kingma & Welling, 2013; Karras et al., 2019; Goodfellow et al., 2020) to the high-fidelity capabilities of Diffusion Probabilistic Models (Sohl-Dickstein et al., 2015). Diffusion-based frameworks (Rasul et al., 2021; Tashiro et al., 2021; Kollovieh et al., 2023) have recently advanced
+
+2
+
+A Regime-Aware Trajectory Prediction Framework for 1000+ Systems Biology Models
+
+conditional time-series forecasting, enabling uncertainty quantification through trajectory sampling. However, their iterative denoising process incurs prohibitive computational costs in real-world deployment (Lipman et al., 2022).
+Flow Matching (FM) (Lipman et al., 2022; Tong et al., 2023b) offers a more efficient alternative by learning continuous probability paths grounded in optimal transport theory (McCann, 1997). By inducing nearly straight vector fields, FM reduces sampling cost and scales well to probabilistic forecasting. Yet, FM-based time-series models (Kollovieh et al., 2024; Hu et al., 2024; Zhang et al., 2024) typically rely on uninformative priors, neglecting critical temporal dependencies. Several recent works have attempted to introduce structural bias into generative forecasting, but limitations persist. TSFlow (Kollovieh et al., 2024) employs dataset-specific Gaussian Process priors that cannot adapt to heterogeneous regimes, while CGFM (Xu et al., 2025) constructs its source distribution using external auxiliary forecasters, increasing computational overhead. In contrast, our framework internalizes prior and conditioning adaptation within a unified architecture, eliminating the need for external predictors and providing robust, self-contained modeling across diverse biological dynamics.
+3. Method
+Figure 2 illustrates RegimeFlow, a regime-aware trajectory prediction framework for biological models. The key challenge is to generalize long-horizon predictions from short observation windows across heterogeneous systems. We address this by constructing a regime-aware prior and mapping it to target trajectory distributions via conditional flow matching, with adaptive conditioning to align the vector field with regime characteristics.
+
+This choice yields straight conditional paths with constant conditional vector field ut(xt | x0, x1) = x1 - x0. Consequently, learning reduces to a regression problem that matches v(t, xt) to this computable target field:
+LCFM() = E tU[0,1] v(t, xt) - (x1 - x0)22 .
+x0 q0 ,x1 q1
+3.2. Problem Formulation
+We consider a universe of heterogeneous biological ODE systems S. To rigorously evaluate the model's capability to generalize across distinct systems, we partition S into two disjoint sets: a source training set Strain and a target set Stest reserved for evaluation, ensuring that Strain  Stest = .
+In this framework, biological regime (denoted by C) refers to a qualitative class of dynamical behavior exhibited by a system over time. Unlike prescribing specific trajectories or microscopic parameters (e.g., reaction rates), regimes characterize the macroscopic pattern that a biological system is constrained to follow. These include sustained oscillations (e.g., circadian rhythms or cell cycles), monotonic trends (e.g., irreversible disease progression or tumor growth), and convergence to stable equilibria (e.g., homeostatic regulation or metabolic processes). Systems within the same regime may differ in transient dynamics, but share similar long-term qualitative behavior.
+For any system S(i)  S, let y  RL+T represent a univariate trajectory composed of a historical observation yp  RL and a future trajectory yf  RT . Our goal is to learn a parameterized model on Strain that approximates the conditional target distribution q1(y|yp, C) for unseen systems in Stest, conditioned on the observation and biological regime. The conditional generative process is formalized as:
+
+3.1. Preliminary: Conditional Flow Matching
+Our approach builds on the conditional flow matching (CFM) framework (Lipman et al., 2022; Tong et al., 2023a), which constructs a time-dependent vector field to transport a source distribution q0 to a target distribution q1. Formally, CFM defines a vector field ut : [0, 1] × Rd  Rd that governs the trajectory of samples through dxt = ut(xt) dt. This ODE induces a probability path {pt}t[0,1] satisfying the boundary conditions p0 = q0 and p1 = q1. To circumvent the intractability of the marginal vector field generating pt, CFM learns a neural approximation v by regressing onto tractable conditional vector fields.
+Following the method proposed in (Lipman et al., 2022), we define the conditional probability path via linear interpolation between a source sample x0  q0 and a target sample x1  q1. The resulting trajectory is expressed as xt = (1 - t)x0 + tx1 with t  [0, 1].
+
+p(y|yp, C) = p(y|x0, yp, C)q0(x0|yp, C) dx0. (1)
+We introduce a regime-aware prior q0(x0|yp, C) that conditions the source distribution on the biological regime and the observed history via basis functions, thereby simplifying the learning of vector field v. Incorporating this prior into flow matching yields a specialized training objective:
+L() = Et,x0,x1 v(t, xt, yp, C) - (x1 - x0)22 , (2)
+where x0  q0(·|yp, C) and x1  q1(·|yp, C).
+3.3. Regime-Aware Prior Construction
+In contrast to standard generative frameworks that rely on uninformative Gaussian source distributions, biological trajectories exhibit characteristic macroscopic behaviors, including stable, monotonic, and oscillatory regimes. We encode this information into a regime-aware prior, replacing
+
+3
+
+A Regime-Aware Trajectory Prediction Framework for 1000+ Systems Biology Models
+
+Input
+Biological Regime
+
+Regime-Aware Prior
+Regime-Specific Basis Function 
+
+Sampling from !
+
+Monotonic Oscillatory Stable
+Historical Observation
+
+#%)* 
+
+Mask !
+
+$%&'(!'  !"# 
+
+ Bayesian
+
+Covariance Regularization
+
+$
+
+#
+
+Linear Regression
+
+Prior Conditioning
+
+Condition-Modulated Backbone
+
+/
+
+,%-.
+
+×
+
+Flow Time
+
++
+
+Encoding
+
+
+
+Regime Embed 
+
+PointEmbed Linear
+Pre-AdaLN SSM Block Pre-AdaLN
+FFN Head
+
+Output
+Sampling from "
+Forecasting
+
+Figure 2. Overview of regime-aware trajectory prediction framework. Given historical observations yp, RegimeFlow encodes biological regime information via structured basis functions and Bayesian linear regression to infer a regime-aware prior q0. Sampling from the prior initializes conditional flow matching. The backbone, adaptively conditioned on regime characteristics, learns a vector field v to generate future long-horizon trajectories yp via ODE integration.
+
+generic stochastic initialization with structured initial states that are consistent with the system's dynamical patterns. The resulting transport process is biased toward biologically plausible trajectories from the outset.
+
+3.3.1. DESIGN OF REGIME-SPECIFIC BASIS FUNCTIONS
+
+We ground our trajectory modeling in classical function approximation theory. The Stone-Weierstrass Theorem (Stone, 1948) establishes that continuous functions on compact intervals can be uniformly approximated to arbitrary precision by sufficiently rich families of functions, such as polynomial or trigonometric bases. While our construction employs finite, structured basis sets, this result provides theoretical intuition for representing trajectories through basis superpositions.
+
+Accordingly, we model an observed trajectory segment yp as a weighted superposition of explicit basis functions, augmented with structural inductive biases to reflect regime priors. We formalize this basis projection as a Bayesian linear regression (BLR) (Box & Tiao, 2011) problem. Let ( ) = [1( ), . . . , K ( )]  RK denote the vector of basis functions evaluated at the relative time index  of the trajectory. We specify the likelihood function as:
+
+yp = w + ,   N (0, -1I),
+
+(3)
+
+where w  RK is the weight vector,  denotes the noise precision, and  accounts for both aleatoric measurement noise and approximation errors due to basis truncation.
+
+We construct the basis ( ) as a composite library of functional primitives, explicitly tailored to span canonical biological dynamical regimes. (i) For stable trajectories characterized by asymptotic relaxation toward steady states, we employ a dictionary of exponential decay terms {1 - e-j }j over a discretized set of rates {j}, with scaling absorbed by the regression weights. (ii) To represent oscillatory patterns, we adopt a Fourier basis {sin(k ), cos(k )}k, where the fundamental frequency  is informed by domain knowledge of the biological system when available (e.g., circadian
+
+rhythms exhibit a 24-hour period). (iii) Monotonic trends are captured using polynomial basis {1, ,  2, ...}. In complex scenarios where the dynamic pattern does not fall into any of the predefined regime categories, we revert to the degenerate basis {1}, yielding a time-invariant isotropic Gaussian prior. This fallback avoids imposing spurious structure when regime information is ambiguous. Regime labels are assigned per coordinate using an automated detector followed by manual validation; details are provided in Appendix C.4.
+
+3.3.2. BAYESIAN INFERENCE
+Given the Gaussian likelihood and the conjugate isotropic prior p(w) = N (0, -1I), the posterior distribution p(w | yp) remains Gaussian and admits a closed-form solution:
+
+p(w | yp) = N (w; µw, w).
+
+(4)
+
+The posterior covariance and mean are given by
+
+w =
+
+I + pp
+
+-1
+,
+
+µw = wp yp,
+
+(5)
+
+where p  RL×K denotes the design matrix formed by evaluating K basis functions at the L observed time points.  and  denote the prior precision and the observation noise, respectively. As a basis for our prior, we first derive the standard Bayesian predictive distribution by marginalizing over the weight uncertainty. Define f  RT ×K as the basis matrix evaluated over the future T time points. The resulting distribution is:
+
+N (x0; f µw, -1I + f wf).
+
+(6)
+
+The predictive trajectory mean µprior = f µw provides a regime-informed extrapolation of the observed trajectory that reflects the macroscopic biological behavior implied by the chosen basis functions.
+
+4
+
+A Regime-Aware Trajectory Prediction Framework for 1000+ Systems Biology Models
+
+3.3.3. COVARIANCE REGULARIZATION
+While the Bayesian linear regression provides a full covariance matrix, directly using this dense structure for longhorizon prediction (T > L) can be problematic. In particular, finite basis extrapolation over extended horizons may induce numerical instability and inflated variance estimates (Bishop & Nasrabadi, 2006), potentially misleading the generative process through poorly scaled priors. To address this instability, we retain the predictive mean µprior and regularize the covariance used to initialize the flow. We replace the anisotropic predictive covariance with an isotropic approximation to improve numerical stability.
+This simplification is supported by the Wasserstein-2 decomposition in Appendix A (Eq. 19), which separates the effect of mean alignment from the centered distribution term. Thus, fixing an isotropic covariance preserves the BLR mean guidance while stabilizing the source distribution; the empirical comparison with the full BLR covariance is provided in Appendix Table 3.
+Formally, we define the regime-aware prior as
+
+q0(x0|yp, C) = N (x0; µprior, i2nitI),
+
+(7)
+
+where i2nit is a scalar variance hyperparameter.
+This covariance regularization preserves the extrapolated trend of the trajectory mean while avoiding numerical artifacts arising from long-range uncertainty propagation. Empirically, the residuals (yf - µprior) are approximately Gaussian, as shown in Appendix Figure 9.
+
+3.3.4. THEORETICAL JUSTIFICATION
+We provide a geometric characterization of the proposed prior, demonstrating that aligning the prior with the regime subspace yields provable advantages. Specifically, we establish that under an explicit Signal-to-Noise Ratio (SNR) condition, our approach strictly reduces the expected Optimal Transport cost relative to the standard Gaussian.
+First, we analyze the estimator's variance. Let design := f (pp)-1f denote the predictive covariance matrix determined solely by the basis geometry.
+Proposition 3.1 (Error Reduction under Regime-Aware Initialization). In the limit of vanishing regularization (  0), the regime-aware prior yields a strictly lower mean squared error for trajectory initialization than the uninformative Gaussian prior, provided the following SNR condition holds:
+
+µQ2 2
+
+>
+
+Tr(design),
+
+(8)
+
+where µQ2 denotes the energy of the target mean trajectory and 2 = -1 is the observation noise variance.
+
+Proposition 3.1 establishes that when the projected trajectory energy dominates the extrapolation variance induced by the basis geometry, regime-aware initialization improves estimation accuracy. Geometrically, this corresponds to initializing the flow closer to the target manifold, thereby shortening the transport path required for generation.
+Proposition 3.2 (Reduction of Expected Wasserstein-2 Cost). Under the condition in Proposition 3.1, for any target distribution Q with finite variance, the regime-aware prior PBLR yields a strictly smaller expected Wasserstein-2 distance to Q than an uninformative Gaussian prior PGA:
+Eyp W22(PBLR(yp), Q) < W22(PGA, Q) . (9)
+
+Detailed proofs are provided in Appendix A, complemented by empirical verification in Appendix B.1. Together, these results formalize how regime-aware initialization reduces the geometric complexity of the transport problem by providing an initial trajectory distribution closer to the target dynamics. By effectively contracting the transport distance, this approach alleviates the model burden to learn highly complex mappings, thereby improving optimization stability and mitigating the ill-posedness commonly encountered in long-horizon forecasting.
+
+A Computable SNR Criterion. The SNR condition in Proposition 3.1 depends on the unknown target mean µQ, and therefore cannot be checked directly at test time. We introduce a computable surrogate based on the observed history and the selected basis family:
+
+^ (yp)
+
+:=
+
+µprior(yp)2 ^2
+
+- Tr(design),
+
+(10)
+
+where µprior(yp) is the predicted trajectory mean, used as a plug-in estimate of the target mean, and ^2 is estimated from the residuals obtained when fitting the observed window. This diagnostic operationalizes the SNR condition using quantities available from the observed history and the geometry of the selected basis. A positive value suggests that the regime-specific basis can provide an informative source initialization, whereas a non-positive value indicates potential regime mismatch or insufficient confidence, in which case regime-agnostic inference serves as a natural fallback or a more refined basis family may be warranted.
+
+3.4. Condition-Modulated Backbone
+To parameterize the neural vector field v, we propose the Condition-Modulated backbone. This backbone harnesses the linear time complexity of Selective State Space Model (SSM) (Gu & Dao, 2024) to capture long-range temporal dependencies efficiently.
+
+5
+
+A Regime-Aware Trajectory Prediction Framework for 1000+ Systems Biology Models
+
+3.4.1. INPUT EMBEDDING AND CONDITION ENCODING
+We employ a channel-independent architecture to handle biological models of varying dimensions. Each dimension is processed as a univariate sequence derived from the intermediate flow state xt, while all dimensions share the same backbone parameters. This flow state xt, along with the flow time t and biological regime C, is projected into a shared latent space RD. The univariate input is encoded into the latent space z0 via an MLP-based point embedding: z0 = MLPemd(xt). Concurrently, the flow time t  [0, 1] is encoded via sinusoidal positional embeddings to yield et  RD (Kollovieh et al., 2024). The initial hidden state of the backbone (h0) is formed by injecting a layer-specific time bias: h0 = z0 + Lineartime(et), where Lineartime denotes the time linear projection.
+To encode the biological regime C = (cpat, cfreq), we retrieve pattern embeddings epat for the discrete pattern variable cpat  {1, . . . , Npat} from a learnable matrix, and project the continuous frequency cfreq  R0 into embeddings efreq via a Fourier feature mapping with learnable frequencies (Tancik et al., 2020).
+To facilitate classifier-free guidance (Ho & Salimans, 2022), regime embeddings (pattern and oscillatory frequency) are randomly masked during training and replaced with learnable null tokens, enabling the model to learn an explicit representation for missing regime information and capture both regime-conditioned and regime-agnostic dynamics. The processed regime features (epat, efreq) are concatenated with the flow time embedding et and projected into a global conditioning vector: zcond = MLPcond([epat, efreq, et]). zcond serves to regulate the vector field dynamics.
+3.4.2. CONDITION-MODULATED LAYER
+The backbone consists of M stacked condition-modulated layers designed to integrate regime prior directly into the latent dynamics. Each layer utilizes a pre-normalized residual structure, comprising an SSM block followed by a FeedForward Network (FFN). Conditioning is achieved using Adaptive Layer Normalization (AdaLN) (Perez et al., 2018), which modulates intermediate representations based on the global conditioning vector zcond. For the l-th layer, AdaLN computes dimension-wise scale (sl) and shift (dl) from zcond and applies them to normalized hidden states:
+(sl, dl) = Linear(ald)a(zcond), AdaLN(h, zcond) = RMSNorm(h)  (1 + sl) + dl.
+(11) Following (Peebles & Xie, 2023), we initialize the projection Lineara(ld)a with zeros, starting the modulation as an identity transformation (sl = 0, dl = 0), allowing the backbone to initially train in a regime-agnostic manner and improving convergence stability.
+
+With this modulation, the state updates for the l-th layer are:
+
+hl = hl-1 + SSM (AdaLN(hl-1, zcond)) , hl = hl + FFN (AdaLN(hl, zcond)) .
+
+(12)
+
+Finally, to preserve multi-scale representations across network depths, the target vector field is predicted by decoding the aggregated sum of all layer outputs, rather than relying solely on the final hidden state.
+
+4. Experiments
+We evaluate RegimeFlow using our benchmark designed to rigorously assess long-horizon trajectory inference across diverse biological systems. All reported metrics are presented as the mean and standard deviation (µ ± ) over three independent seeds, providing a quantitative measure of predictive stability and robustness.
+4.1. Benchmark Construction and Task Formulation
+To evaluate performance across the broad spectrum of biological complexity, we assemble SysBio-Traj, a large-scale benchmark of 1,050 ODE systems spanning diverse taxonomic domains and dynamical regimes sourced from (MalikSheriff et al., 2020) (see Appendix D for the full list of biological systems). As illustrated in Appendix Figure 15, this benchmark exhibits substantial heterogeneity, with system dimensions ranging from 1 to 1,000 and reaction counts spanning three orders of magnitude. For each system, ground-truth trajectories are generated by numerically solving the ODEs and sampling the solution at 512 uniformly spaced time points.
+To emulate real-world scenarios where observational data is limited, we formulate a challenging long-horizon forecasting task: predicting trajectories over T = 256 time points from a given L = 96 observed points. Specifically for oscillatory systems, we forecast one full cycle from observations covering only part of a cycle, testing the model's ability to extrapolate full oscillatory dynamics when periodicity is not explicitly apparent. We adopt a randomized system-wise train/validation/test split (70%/10%/20%), such that models are trained and evaluated on disjoint sets of biological systems. This setup enforces a rigorous out-of-distribution (OOD) generalization. To accommodate the wide variation in system dimensionality, we employ a channel-independent modeling strategy with instance-wise normalization.
+4.2. Baselines and Implementation Details
+We compare our framework against two prominent paradigms: point forecasting and probabilistic generative models. Point forecasting baselines include MLPbased models such as DLinear (Zeng et al., 2023) and TimeMixer (Wang et al., 2024a), Transformer-based models
+
+6
+
+A Regime-Aware Trajectory Prediction Framework for 1000+ Systems Biology Models
+
+Table 1. Cross-system generalization performance on MSE and MAE across regime-specific subsets, complex subset outside the three regimes, and overall. Each entry reports the mean with standard deviation. Best and second-best performances are highlighted in bold and underline, respectively. Models marked with  additionally condition on biological regime, including pattern and frequency.
+
+Overall
+
+Complex
+
+Stable
+
+Oscillatory
+
+Monotonic
+
+Model
+
+MSE
+
+MAE
+
+MSE
+
+MAE
+
+MSE
+
+MAE
+
+MSE
+
+MAE
+
+MSE
+
+MAE
+
+Point Forecasting
+
+DLinear
+
+0.061±0.002
+
+iTransformer 0.045±0.002
+
+PatchTST TimeMixer
+
+0.041±0.001 0.051±0.004
+
+TimeXer
+
+0.043±0.001
+
+SMamba
+
+0.045±0.001
+
+BiMamba4TS 0.045±0.001
+
+NSformer
+
+0.028±0.002
+
+0.174±0.004 0.100±0.005 0.095±0.005 0.124±0.008 0.100±0.007 0.105±0.004 0.099±0.004 0.079±0.005
+
+0.079±0.003 0.070±0.010 0.062±0.006 0.070±0.008 0.069±0.009 0.068±0.010 0.070±0.010 0.048±0.002
+
+0.188±0.010 0.138±0.020 0.133±0.021 0.145±0.017 0.139±0.020 0.141±0.023 0.140±0.021 0.116±0.007
+
+0.046±0.001 0.032±0.002 0.028±0.001 0.038±0.004 0.030±0.003 0.033±0.002 0.031±0.002 0.017±0.001
+
+0.154±0.005 0.072±0.004 0.070±0.004 0.096±0.009 0.074±0.008 0.078±0.003 0.070±0.004 0.055±0.005
+
+0.156±0.013 0.127±0.028 0.128±0.024 0.112±0.013 0.123±0.028 0.114±0.016 0.125±0.022 0.100±0.008
+
+0.290±0.011 0.233±0.018 0.233±0.016 0.234±0.014 0.231±0.018 0.228±0.013 0.237±0.015 0.221±0.006
+
+0.051±0.005 0.030±0.008 0.021±0.006 0.053±0.010 0.025±0.006 0.035±0.005 0.030±0.005 0.011±0.001
+
+0.176±0.013 0.100±0.018 0.085±0.016 0.163±0.020 0.098±0.015 0.115±0.010 0.102±0.013 0.053±0.002
+
+Time-Series Foundation Models (Zero-Shot)
+
+TimeMoE
+
+0.120±0.004 0.231±0.010
+
+Sundial
+
+0.111±0.003 0.217±0.007
+
+TimesFM
+
+0.099±0.005 0.152±0.004
+
+Chronos
+
+0.097±0.004 0.167±0.000
+
+0.099±0.013 0.095±0.012 0.109±0.009 0.144±0.021
+
+0.191±0.032 0.185±0.031 0.145±0.021 0.181±0.012
+
+0.118±0.003 0.106±0.002 0.086±0.002 0.078±0.003
+
+0.221±0.010 0.203±0.008 0.138±0.006 0.147±0.002
+
+0.138±0.005 0.141±0.009 0.249±0.032 0.234±0.013
+
+0.268±0.005 0.270±0.009 0.299±0.014 0.309±0.007
+
+0.138±0.012 0.133±0.011 0.045±0.004 0.054±0.004
+
+0.289±0.023 0.281±0.022 0.112±0.007 0.153±0.005
+
+Probabilistic Forecasting w/o Regime Condition (Best Performing: Ours)
+
+CSDI
+
+0.099±0.020 0.254±0.034 0.100±0.030 0.250±0.048
+
+TSDiff
+
+0.042±0.003 0.118±0.004 0.058±0.007 0.146±0.014
+
+TSFlow
+
+0.026±0.003 0.075±0.011 0.044±0.001 0.111±0.009
+
+Ours
+
+0.023±0.002 0.067±0.004 0.039±0.001 0.102±0.008
+
+0.103±0.022 0.030±0.003 0.017±0.004 0.015±0.002
+
+0.264±0.038 0.096±0.004 0.055±0.012 0.046±0.003
+
+0.137±0.012 0.124±0.010 0.088±0.007 0.081±0.008
+
+0.304±0.014 0.263±0.012 0.208±0.007 0.196±0.009
+
+0.053±0.013 0.023±0.001 0.008±0.002 0.008±0.002
+
+0.172±0.030 0.092±0.004 0.044±0.008 0.041±0.005
+
+Probabilistic Forecasting w/ Regime Condition (Best Performing: Ours)
+
+CSDI TSDiff TSFlow Ours
+
+0.076±0.010 0.034±0.008 0.016±0.004 0.012±0.002
+
+0.204±0.012 0.109±0.017 0.064±0.013 0.044±0.006
+
+0.100±0.009 0.088±0.033 0.039±0.005 0.034±0.002
+
+0.236±0.011 0.201±0.054 0.111±0.022 0.096±0.011
+
+0.072±0.015 0.014±0.003 0.008±0.002 0.006±0.001
+
+0.196±0.019 0.068±0.011 0.046±0.010 0.027±0.003
+
+0.105±0.011 0.118±0.002 0.044±0.005 0.035±0.002
+
+0.257±0.024 0.292±0.001 0.139±0.017 0.111±0.008
+
+0.060±0.024 0.014±0.001 0.008±0.001 0.006±0.000
+
+0.183±0.046 0.078±0.009 0.050±0.005 0.033±0.002
+
+Table 2. Uncertainty quantification measured by CRPS () across regime-specific subsets, complex subset, and overall. Best results are in bold. (: condition on biological regime.)
+
+Model Overall Complex Stable Oscillatory Monotonic
+
+CSDI 0.138
+
+(±0.013)
+TSDiff 0.077
+
+(±0.015)
+TSFlow 0.047
+
+Ours
+
+(±0.010)
+0.039
+
+(±0.006)
+
+0.166
+(±0.018)
+0.151
+(±0.049)
+0.086
+(±0.016)
+0.086
+(±0.010)
+
+0.127
+(±0.019)
+0.048
+(±0.009)
+0.034
+(±0.008)
+0.023
+(±0.003)
+
+0.186
+(±0.015)
+0.198
+(±0.001)
+0.100
+(±0.011)
+0.098
+(±0.007)
+
+0.135
+(±0.040)
+0.057
+(±0.006)
+0.037
+(±0.003)
+0.028
+(±0.002)
+
+including iTransformer (Liu et al., 2023), PatchTST (Nie, 2022), TimeXer (Wang et al., 2024b), and NSformer (Liu et al., 2022), as well as state-space models such as SMamba (Wang et al., 2025) and BiMamba4TS (Liang et al., 2024). For probabilistic baselines, we consider diffusion models, TSDiff (Kollovieh et al., 2023) and CSDI (Tashiro et al., 2021), and flow matching methods, TSFlow (Kollovieh et al., 2024). We additionally evaluate four zero-shot time-series foundation models (TSFMs), including TimeMoE (Shi et al., 2025), Sundial (Liu et al., 2025b), TimesFM (Das et al., 2024), and Chronos (Ansari et al., 2024); detailed settings and analysis are provided in Appendix B.7. Full baseline descriptions and implementation settings are provided in Appendix C.
+
+We assess point prediction accuracy using mean squared error (MSE) and mean absolute error (MAE). To evaluate distributional fidelity, we employ the continuous ranked probability score (CRPS) (Gneiting & Raftery, 2007), which is approximated using 100 Monte Carlo samples per test instance. All experiments were implemented in PyTorch and executed on a single NVIDIA A6000 GPU.
+
+4.3. Main Results
+
+ 
+
+Mus musculus
+
+Unspecified
+
+Mammalia
+
+0.07 0.05 0.03
+
+Arabidopsis thaliana
+
+Rattus norvegicus
+
+Homo sapiens
+
+Saccharomyces cerevisiae
+
+Trypanosoma brucei
+
+Ours TSFlow  TSDiff  NSformer PatchTST DLinear
+
+cellular organisms
+
+Xenopus laevis
+
+Figure 3. MSE comparison between Ours and five competitive baselines across ten most frequent biological system taxonomies.
+
+Table 1 summarizes the forecasting performance on unseen
+biological systems. When incorporating regime information (denoted by ), our method consistently outperforms all
+
+7
+
+NSformer
+
+A Regime-Aware Trajectory Prediction Framework for 1000+ Systems Biology Models
+
+Observation Queralt2006
+
+Ground Truth Novak2022
+
+Prediction dePillis2005
+
+95% Confidence Interval Lopez2013
+
+MSE MAE Validation Loss
+
+0.03
+
+0.08
+
+0.06 0.02
+0.04
+0.01 0.02
+
+0.00
+
+ISO
+
+PE Ours
+
+w/o AdaLN
+
+PE Ours 0.00 w/ AdaLN
+
+0.04 0.03 0.02
+
+PE (w/o AdaLN) Ours  (w/o AdaLN) Ours  (w/ AdaLN)
+
+0 50 100 150 200 250 300 Epochs
+
+Figure 5. Left: Ablation analysis of prior designs (ISO, PE, Our regime-aware) and adaptive conditioning (AdaLN). Right: Validation loss under different prior initializations and conditioning.
+
+TSFlow 
+
+Ours
+
+Figure 4. Visualization of trajectory forecasts by Ours, TSFlow, and NSformer on four representative biological systems.
+SOTA baselines across individual regimes, complex systems outside the three canonical regimes, and overall. It achieves overall reductions of 25% in MSE and 31% in MAE relative to the best-performing baseline, TSFlow. These improvements persist across diverse regimes (MSE: 14%32%), underscoring our superior capability for cross-system generalization. Figure 3 further shows our method attains the lowest MSE across all ten most frequent biological system taxonomies compared to baselines.
+To demonstrate robustness and uncertainty across distinct dynamical behaviors, we visualize predictions on four representative biological systems: bistable mitotic exit switch (Queralt et al., 2006), oscillatory endoreplication (Novak & Tyson, 2022), tumor-immune interactions (de Pillis et al., 2005), and a high-dimensional apoptosis model (Lopez et al., 2013). As shown in Figure 4, our framework produces the most accurate predictions with well-calibrated uncertainty. In contrast, TSFlow exhibits degraded predictive performance with substantially wider confidence intervals, likely due to its reliance on fixed, system-agnostic priors, while NSformer struggles to accommodate diverse regimes. Consistent with these qualitative observations, our approach achieves an average 17% reduction in CRPS relative to the strongest baseline, TSFlow (Table 2), demonstrating superior uncertainty calibration and closer alignment with the target distribution.
+Notably, even without regime information, our framework remains competitive and consistently outperforms all baselines across individual subsets and overall. RegimeFlow reduces MSE and MAE by 12% and 11% relative to the best-performing baseline, TSFlow. This advantage likely stems from the input-dependent dynamics of the SSM-based backbone (Gu et al., 2021; Gu & Dao, 2024). Point forecasting architectures, while effective on single-domain benchmarks (Lai et al., 2018; Makridakis et al., 2020), exhibit fundamental limitations in this cross-system setting and often collapse to trivial mean trends across diverse regimes.
+
+Among point forecasting baselines, NSformer achieves the strongest performance, likely due to its series stationarization and de-stationary attention mechanisms, which enhance robustness to scale shifts. Conversely, methods that rely heavily on inter-variable correlations, such as iTransformer (Liu et al., 2023), are disadvantaged as biological coupling relationships often vary drastically across systems.
+Table 1 also reports zero-shot results from four representative TSFMs. Despite their larger parameter scales (128­ 200 M), these models remain substantially less accurate on SysBio-Traj; the strongest TSFM, Chronos, obtains an overall MSE of 0.097, compared with 0.012 for Ours. Detailed analyses are provided in Appendix B.7.
+4.4. Effectiveness of Regime-Aware Conditioning
+To assess the contribution of each component, we independently ablate the regime-aware prior and adaptive conditioning design. In Figure 5 (left), replacing the Isotropic (ISO) kernel with the Periodic (PE) kernel yields only a marginal improvement in accuracy. In contrast, substituting the above kernels with our regime-aware prior leads to a substantially larger reduction in error (MSE: 0.0250.018), indicating that our prior provides more informative guidance for modeling complex dynamical behaviors than dataset-specific priors. Under our prior, introducing adaptive conditioning (AdaLN) further reduces the error (MSE: 0.0180.012), highlighting its importance in leveraging prior information. Figure 5 (right) shows that our initialization converges to a consistently lower validation loss than the PE kernel under identical model settings, highlighting the optimization benefits of the regime-aware prior.
+4.5. Sensitivity, Efficiency, and Extrapolation Analysis
+We first assess the model's sensitivity to the regime information availability. During training, regime information is randomly masked as a form of regularization, discouraging over-reliance on explicit prior metadata and encouraging the backbone to infer regime-relevant features directly from raw time-series observations. When regime information is masked, system dynamics are treated as unknown and the source distribution is initialized from the observed history as
+
+8
+
+A Regime-Aware Trajectory Prediction Framework for 1000+ Systems Biology Models
+
+w/o Regime
+
+Pattern Only
+
+Pattern + Frequency
+
+MAE
+
+best
+
+Number of Scales Number of Harmonics Polynomial Degree
+
+MSE
+
+MSE MAE
+
+Regime Masking Rate
+
+Regime Masking Rate
+
+Figure 6. Sensitivity to regime information availability. Our model is trained with different regime masking rates and tested under varying regime conditions (no regime, pattern, pattern & frequency).
+
+N (yL, i2nitI). Figure 6 reveals a trade-off: higher masking improves regime-agnostic accuracy but slightly degrades regime-aware performance. A masking rate of 0.3 offers a good balance, maintaining low regime-aware error while preserving competitive regime-agnostic performance.
+We further investigate the sensitivity of Bayesian linear regression (BLR) hyperparameters. Figure 7 (top left) identifies prior precision  = 5.0 and observation noise  = 10.0 as the optimal choices. The top-right panel shows that a quadratic polynomial coupled with a single harmonic component offers sufficient performance, while adding additional scales further improves accuracy. In terms of inference efficiency (bottom left), our method achieves nearoptimal CRPS with a single function evaluation step, significantly outperforming TSFlow, which requires  16 steps. This efficiency suggests that the proposed prior initializes the flow closer to the target distribution, thereby reducing the complexity of ODE integration. A full computational cost comparison across all models is provided in Appendix B.6, where RegimeFlow is 9.3× faster than TSFlow during inference with a single function evaluation. Finally, the extrapolation analysis (bottom right) demonstrates that our method maintains low error when extending the prediction horizon from 256 to 416 time steps. In contrast, TSFlow exhibits a much steeper error increase, highlighting the improved robustness of regime-aware initialization under horizon shifts.
+4.6. Additional Robustness Studies
+Beyond the main benchmark results and sensitivity analyses discussed above, Appendix B provides supplementary stress tests and component-level ablations. Under measurement noise and irregular sampling, RegimeFlow maintains consistent advantages over TSFlow (Appendix B.10); on representative transient and hybrid trajectories, it accommodates dynamics beyond canonical regimes, supporting that the regime-aware prior acts as soft guidance rather than a rigid constraint (Appendix B.8).
+The appendix also provides component-level ablations on
+
+ONbosiseervation
+
+Prior Precision  MSE
+TSFlow Ours
+
+Number of Basis
+TSFlow TSFlow Ours
+
+MAE Training Horizon (256)
+
+CRPS
+
+Extrapolation Region
+
+Number of Function Evaluations (NFE)
+
+Prediction Horizon
+
+Figure 7. Top left: Sensitivity to BLR hyperparameters. Top right: Effect of basis complexity (numbers of harmonics, scales, and polynomial degrees). Bottom left: Inference efficiency (CRPS vs. Number of Function Evaluation). Bottom right: Extrapolation performance under extended forecasting horizons.
+
+covariance regularization, backbone choice, and TSFlow kernel configurations (Appendix Sections B.2, B.3, and B.4). For the NFE, extrapolation, and theory-bound analyses discussed above, Appendix Sections B.5, B.9, and B.1 provide detailed protocols and additional quantitative results. Together, these studies show that RegimeFlow remains effective beyond the clean benchmark setting, while the ablations confirm the complementary benefits of the regime-aware prior and sequence backbone.
+5. Conclusion
+This work introduced RegimeFlow, a unified framework for cross-system biological trajectory prediction. By replacing an uninformative source distribution with a regime-aware prior, RegimeFlow improves long-horizon forecasting accuracy, uncertainty calibration, and inference efficiency across SysBio-Traj, a large curated benchmark of biological systems. Beyond model performance, SysBio-Traj provides a standardized testbed for evaluating cross-system generalization in systems biology. Several limitations motivate future work. RegimeFlow currently adopts a channel-independent formulation to support transfer across systems with heterogeneous dimensions and system-specific interaction topologies, leaving topology-aware relational modeling as an important extension. Although representative transient and hybrid behaviors can be handled through soft regime guidance (Appendix B.8), parameter-dependent regime transitions and highly irregular or chaotic dynamics may require more adaptive, data-driven regime priors beyond the current basis library. Future work will also extend SysBio-Traj and RegimeFlow toward stochastic, spatio-temporal, and multi-modal biological settings.
+
+9
+
+A Regime-Aware Trajectory Prediction Framework for 1000+ Systems Biology Models
+
+Impact Statement
+This paper presents work whose goal is to advance the field of Machine Learning and its application to Systems Biology. There are many potential societal consequences of our work, none which we feel must be specifically highlighted here.
+References
+Adams, R., Tsorman, N., Stratford, K., Akman, O., Gilmore, S., Juty, N., Le Nove`re, N., Millar, A., and Millar, A. The input signal step function (issf), a standard method to encode input signals in sbml models with software support, applied to circadian clock models. Journal of Biological Rhythms, 27(4):328­332, 2012.
+Ahamed, M. A. and Cheng, Q. Timemachine: A time series is worth 4 mambas for long-term forecasting. In ECAI 2024: 27th European Conference on Artificial Intelligence, 19-24 October 2024, Santiago de Compostela, Spain-Including 13th Conference on Prestigious Applications of Intelligent Systems. European Conference on Artificial Intelli, volume 392, pp. 1688, 2024.
+Andrews, S. S., Wiley, H. S., and Sauro, H. M. Design patterns of biological cells. BioEssays, 46(3):2300188, 2024.
+Ansari, A. F., Stella, L., Turkmen, C., Zhang, X., Mercado, P., Shen, H., Shchur, O., Rangapuram, S. S., Arango, S. P., Kapoor, S., et al. Chronos: Learning the language of time series. arXiv preprint arXiv:2403.07815, 2024.
+Bishop, C. M. and Nasrabadi, N. M. Pattern recognition and machine learning, volume 4. Springer, 2006.
+Box, G. E. and Tiao, G. C. Bayesian inference in statistical analysis. John Wiley & Sons, 2011.
+Bungay, S. D., Gentry, P. A., and Gentry, R. D. Modelling thrombin generation in human ovarian follicular fluid. Bulletin of mathematical biology, 68(8):2283­2302, 2006.
+Chen, R. T., Rubanova, Y., Bettencourt, J., and Duvenaud, D. K. Neural ordinary differential equations. Advances in neural information processing systems, 31, 2018.
+Conradie, R., Bruggeman, F. J., Ciliberto, A., Csika´sz-Nagy, A., Nova´k, B., Westerhoff, H. V., and Snoep, J. L. Restriction point control of the mammalian cell cycle via the cyclin e/cdk2: p27 complex. The FEBS journal, 277 (2):357­367, 2010.
+Course, K. and Nair, P. B. State estimation of a physical system with unknown governing equations. Nature, 622 (7982):261­267, 2023.
+
+Das, A., Kong, W., Sen, R., and Zhou, Y. A decoder-only foundation model for time-series forecasting. In Proceedings of the 41st International Conference on Machine Learning, pp. 10148­10167, 2024.
+de Pillis, L. G., Radunskaya, A. E., and Wiseman, C. L. A validated mathematical model of cell-mediated immune response to tumor growth. Cancer research, 65(17):7950­ 7958, 2005.
+Ekambaram, V., Jati, A., Nguyen, N., Sinthong, P., and Kalagnanam, J. Tsmixer: Lightweight mlp-mixer model for multivariate time series forecasting. In Proceedings of the 29th ACM SIGKDD conference on knowledge discovery and data mining, pp. 459­469, 2023.
+Fribourg, M., Hartmann, B., Schmolke, M., Marjanovic, N., Albrecht, R., Garc´ia-Sastre, A., Sealfon, S., Jayaprakash, C., and Hayot, F. Model of influenza a virus infection: dynamics of viral antagonism and innate immune response. Journal of theoretical biology, 351:47­57, 2014.
+Gneiting, T. and Raftery, A. E. Strictly proper scoring rules, prediction, and estimation. Journal of the American statistical Association, 102(477):359­378, 2007.
+Golomb, D., Yue, C., and Yaari, Y. Contribution of persistent na+ current and m-type k+ current to somatic bursting in ca1 pyramidal cells: combined experimental and modeling study. Journal of neurophysiology, 96(4): 1912­1926, 2006.
+Goodfellow, I., Pouget-Abadie, J., Mirza, M., Xu, B., Warde-Farley, D., Ozair, S., Courville, A., and Bengio, Y. Generative adversarial networks. Communications of the ACM, 63(11):139­144, 2020.
+Gu, A. and Dao, T. Mamba: Linear-time sequence modeling with selective state spaces. In First conference on language modeling, 2024.
+Gu, A., Goel, K., and Re´, C. Efficiently modeling long sequences with structured state spaces. arXiv preprint arXiv:2111.00396, 2021.
+Hairer, E. and Wanner, G. Solving ordinary differential equations. ii, volume 14 of springer series in computational mathematics, 1996.
+Ho, J. and Salimans, T. Classifier-free diffusion guidance. arXiv preprint arXiv:2207.12598, 2022.
+Hu, Y., Wang, X., Ding, Z., Wu, L., Zhang, H., Li, S. Z., Wang, S., Zhang, J., Li, Z., and Chen, T. Flowts: Time series generation via rectified flow. arXiv preprint arXiv:2411.07506, 2024.
+
+10
+
+A Regime-Aware Trajectory Prediction Framework for 1000+ Systems Biology Models
+
+Ideker, T., Galitski, T., and Hood, L. A new approach to decoding life: systems biology. Annual review of genomics and human genetics, 2(1):343­372, 2001.
+Karras, T., Laine, S., and Aila, T. A style-based generator architecture for generative adversarial networks. In Proceedings of the IEEE/CVF conference on computer vision and pattern recognition, pp. 4401­4410, 2019.
+Kim, J., Kim, H., Kim, H., Lee, D., and Yoon, S. A comprehensive survey of deep learning for time series forecasting: architectural diversity and open challenges. Artificial Intelligence Review, 58(7):1­95, 2025.
+Kingma, D. P. and Welling, M. Auto-encoding variational bayes. arXiv preprint arXiv:1312.6114, 2013.
+Kitano, H. Computational systems biology. Nature, 420 (6912):206­210, 2002.
+Klo¨tergens, C., Yalavarthi, V. K., Scholz, R., Stubbemann, M., Born, S., and Schmidt-Thieme, L. Physiome-ode: A benchmark for irregularly sampled multivariate time series forecasting based on biological odes. arXiv preprint arXiv:2502.07489, 2025.
+Kollovieh, M., Ansari, A. F., Bohlke-Schneider, M., Zschiegner, J., Wang, H., and Wang, Y. B. Predict, refine, synthesize: Self-guiding diffusion models for probabilistic time series forecasting. Advances in Neural Information Processing Systems, 36:28341­28364, 2023.
+Kollovieh, M., Lienen, M., Lu¨dke, D., Schwinn, L., and Gu¨nnemann, S. Flow matching with gaussian process priors for probabilistic time series forecasting. arXiv preprint arXiv:2410.03024, 2024.
+Lai, G., Chang, W.-C., Yang, Y., and Liu, H. Modeling long-and short-term temporal patterns with deep neural networks. In The 41st international ACM SIGIR conference on research & development in information retrieval, pp. 95­104, 2018.
+Li, S., Brazhnik, P., Sobral, B., and Tyson, J. J. Temporal controls of the asymmetric cell division cycle in caulobacter crescentus. PLoS computational biology, 5 (8):e1000463, 2009.
+Li, Z., Kovachki, N., Azizzadenesheli, K., Liu, B., Bhattacharya, K., Stuart, A., and Anandkumar, A. Fourier neural operator for parametric partial differential equations. arXiv preprint arXiv:2010.08895, 2020.
+Liang, A., Jiang, X., Sun, Y., Shi, X., and Li, K. Bi-mamba+: Bidirectional mamba for time series forecasting. arXiv preprint arXiv:2404.15772, 2024.
+
+Lipman, Y., Chen, R. T., Ben-Hamu, H., Nickel, M., and Le, M. Flow matching for generative modeling. arXiv preprint arXiv:2210.02747, 2022.
+Liu, J., Zhu, D., Bai, Z., He, Y., Liao, H., Que, H., Wang, Z., Zhang, C., Zhang, G., Zhang, J., et al. A comprehensive survey on long context language modeling. arXiv preprint arXiv:2503.17407, 2025a.
+Liu, Y., Wu, H., Wang, J., and Long, M. Non-stationary transformers: Exploring the stationarity in time series forecasting. Advances in neural information processing systems, 35:9881­9893, 2022.
+Liu, Y., Hu, T., Zhang, H., Wu, H., Wang, S., Ma, L., and Long, M. itransformer: Inverted transformers are effective for time series forecasting. arXiv preprint arXiv:2310.06625, 2023.
+Liu, Y., Qin, G., Shi, Z., Chen, Z., Yang, C., Huang, X., Wang, J., and Long, M. Sundial: A family of highly capable time series foundation models. In International Conference on Machine Learning, pp. 39295­39317. PMLR, 2025b.
+Locke, J. C., Southern, M. M., Kozma-Bogna´r, L., Hibberd, V., Brown, P. E., Turner, M. S., and Millar, A. J. Extension of a genetic network model by iterative experimentation and mathematical analysis. Molecular systems biology, 1 (1):2005­0013, 2005.
+Lopez, C. F., Muhlich, J. L., Bachman, J. A., and Sorger, P. K. Programming biological models in python using pysb. Molecular systems biology, 9(1):646, 2013.
+Makridakis, S., Spiliotis, E., and Assimakopoulos, V. The m4 competition: 100,000 time series and 61 forecasting methods. International Journal of Forecasting, 36(1): 54­74, 2020.
+Malik-Sheriff, R. S., Glont, M., Nguyen, T. V., Tiwari, K., Roberts, M. G., Xavier, A., Vu, M. T., Men, J., Maire, M., Kananathan, S., et al. Biomodels--15 years of sharing computational models in life science. Nucleic acids research, 48(D1):D407­D415, 2020.
+McCann, R. J. A convexity principle for interacting gases. Advances in mathematics, 128(1):153­179, 1997.
+Medley, J. K., Choi, K., Ko¨nig, M., Smith, L., Gu, S., Hellerstein, J., Sealfon, S. C., and Sauro, H. M. Tellurium notebooks--an environment for reproducible dynamical modeling in systems biology. PLoS computational biology, 14(6):e1006220, 2018.
+Mei, L., Yao, J., Ge, Y., Wang, Y., Bi, B., Cai, Y., Liu, J., Li, M., Li, Z.-Z., Zhang, D., et al. A survey of context engineering for large language models. arXiv preprint arXiv:2507.13334, 2025.
+
+11
+
+A Regime-Aware Trajectory Prediction Framework for 1000+ Systems Biology Models
+
+Nie, Y. A time series is worth 64words: Long-term forecasting with transformers. arXiv preprint arXiv:2211.14730, 2022.
+Novak, B. and Tyson, J. J. Mitotic kinase oscillation governs the latching of cell cycle switches. Current Biology, 32 (12):2780­2785, 2022.
+Peebles, W. and Xie, S. Scalable diffusion models with transformers. In Proceedings of the IEEE/CVF international conference on computer vision, pp. 4195­4205, 2023.
+Perez, E., Strub, F., De Vries, H., Dumoulin, V., and Courville, A. Film: Visual reasoning with a general conditioning layer. In Proceedings of the AAAI conference on artificial intelligence, volume 32, 2018.
+Peyre´, G., Cuturi, M., et al. Computational optimal transport: With applications to data science. Foundations and Trends® in Machine Learning, 11(5-6):355­607, 2019.
+Pritchard, L. and Birch, P. R. The zigzag model of plant­ microbe interactions: is it time to move on? Molecular plant pathology, 15(9):865, 2014.
+Queralt, E., Lehane, C., Novak, B., and Uhlmann, F. Downregulation of pp2acdc55 phosphatase by separase initiates mitotic exit in budding yeast. Cell, 125(4):719­732, 2006.
+Radulescu, O., Gorban, A. N., Zinovyev, A., and Lilienbaum, A. Robust simplifications of multiscale biochemical networks. BMC systems biology, 2(1):86, 2008.
+Rasul, K., Seward, C., Schuster, I., and Vollgraf, R. Autoregressive denoising diffusion models for multivariate probabilistic time series forecasting. In International conference on machine learning, pp. 8857­8868. PMLR, 2021.
+Sharp, G. C., Ma, H., Saunders, P. T., and Norman, J. E. A computational model of lipopolysaccharide-induced nuclear factor kappa b activation: a key signalling pathway in infection-induced preterm labour. PloS one, 8(7): e70180, 2013.
+Shi, X., Wang, S., Nie, Y., Li, D., Ye, Z., Wen, Q., and Jin, M. Time-moe: Billion-scale time series foundation models with mixture of experts. In International conference on learning representations, volume 2025, pp. 34635­34667, 2025.
+Sohl-Dickstein, J., Weiss, E., Maheswaranathan, N., and Ganguli, S. Deep unsupervised learning using nonequilibrium thermodynamics. In International conference on machine learning, pp. 2256­2265. pmlr, 2015.
+Stone, M. H. The generalized weierstrass approximation theorem. Mathematics Magazine, 21(5):237­254, 1948.
+
+Tancik, M., Srinivasan, P., Mildenhall, B., Fridovich-Keil, S., Raghavan, N., Singhal, U., Ramamoorthi, R., Barron, J., and Ng, R. Fourier features let networks learn high frequency functions in low dimensional domains. Advances in neural information processing systems, 33:7537­7547, 2020.
+Tashiro, Y., Song, J., Song, Y., and Ermon, S. Csdi: Conditional score-based diffusion models for probabilistic time series imputation. Advances in neural information processing systems, 34:24804­24816, 2021.
+Tomasz, L., Pawel, P., Brasier, A., Bruce, L., and Marek, K. Mathematical model of nf-kappab regulatory module. Journal of Theoretical Biology, 228(2):195­215, 2004.
+Tong, A., Fatras, K., Malkin, N., Huguet, G., Zhang, Y., Rector-Brooks, J., Wolf, G., and Bengio, Y. Improving and generalizing flow-based generative models with minibatch optimal transport. arXiv preprint arXiv:2302.00482, 2023a.
+Tong, A., Malkin, N., Huguet, G., Zhang, Y., Rector-Brooks, J., Fatras, K., Wolf, G., and Bengio, Y. Conditional flow matching: Simulation-free dynamic optimal transport. arXiv preprint arXiv:2302.00482, 2(3), 2023b.
+Tyson, J. J. Modeling the cell division cycle: cdc2 and cyclin interactions. Proceedings of the National Academy of Sciences, 88(16):7328­7332, 1991.
+Tyson, J. J., Chen, K. C., and Novak, B. Sniffers, buzzers, toggles and blinkers: dynamics of regulatory and signaling pathways in the cell. Current opinion in cell biology, 15(2):221­231, 2003.
+Vasiliauskaite, V. and Antulov-Fantulin, N. Generalization of neural network models for complex network dynamics. Communications Physics, 7(1):348, 2024.
+Wang, S., Wu, H., Shi, X., Hu, T., Luo, H., Ma, L., Zhang, J. Y., and Zhou, J. Timemixer: Decomposable multiscale mixing for time series forecasting. arXiv preprint arXiv:2405.14616, 2024a.
+Wang, Y., Wu, H., Dong, J., Qin, G., Zhang, H., Liu, Y., Qiu, Y., Wang, J., and Long, M. Timexer: Empowering transformers for time series forecasting with exogenous variables. Advances in Neural Information Processing Systems, 37:469­498, 2024b.
+Wang, Z., Kong, F., Feng, S., Wang, M., Yang, X., Zhao, H., Wang, D., and Zhang, Y. Is mamba effective for time series forecasting? Neurocomputing, 619:129178, 2025.
+Xu, H., Yu, R., Wu, L., Wang, X., and Liu, Q. Bridging the last mile of prediction: Enhancing time series forecasting with conditional guided flow matching. arXiv preprint arXiv:2507.07192, 2025.
+
+12
+
+A Regime-Aware Trajectory Prediction Framework for 1000+ Systems Biology Models Yildirim, N. and Mackey, M. C. Feedback regulation in
+the lactose operon: a mathematical modeling study and comparison with experimental data. Biophysical journal, 84(5):2841­2851, 2003. Zeng, A., Chen, M., Zhang, L., and Xu, Q. Are transformers effective for time series forecasting? In Proceedings of the AAAI conference on artificial intelligence, volume 37, pp. 11121­11128, 2023. Zhang, X. N., Pu, Y., Kawamura, Y., Loza, A., Bengio, Y., Shung, D., and Tong, A. Trajectory flow matching with applications to clinical time series modelling. Advances in Neural Information Processing Systems, 37:107198­ 107224, 2024.
+13
+
+A Regime-Aware Trajectory Prediction Framework for 1000+ Systems Biology Models
+A. Theoretical Analysis and Proofs
+In this appendix, we formally derive the theoretical conditions under which the regime-aware prior yields a strictly lower estimation risk than an uninformative baseline. We focus our analysis on the limit of vanishing regularization (  0). In this regime, the prediction is governed solely by the projection of the history onto the mechanism subspace, allowing us to isolate and quantify the geometric advantage of the proposed framework.
+
+A.1. Proof of Proposition 3.1
+Proposition 3.1 (Error Reduction under Regime-Aware Initialization). Consider the observation regime where the history length L is sufficient to identify the K basis coefficients (L  K and p has full column rank). Let design := f (pp)-1f denote the predictive covariance matrix determined solely by the basis geometry. In the limit of vanishing regularization (  0), the Regime-Aware Prior strictly reduces the Mean Squared Error (MSE) compared to the uninformed zero-mean prior if and only if the Signal-to-Noise Ratio (SNR) satisfies:
+
+µQ2 2
+
+> Tr(design),
+
+(13)
+
+where µQ2 denotes the energy of the ground truth trajectory, and 2 represents the variance of the observation noise.
+
+Proof. We assess the efficacy of the regime-aware prior by comparing the MSE of the proposed estimator against that of the
+
+zero-mean baseline. For the uninformative estimator µ^ GA = 0, the risk corresponds strictly to the energy of the ground truth trajectory µQ = f w:
+
+RGA := Eyp [0 - µQ2] = µQ2.
+
+(14)
+
+Next, consider the regime-aware prior µprior = f w^ . In the limit of vanishing regularization (  0), then:
+
+w^ = (p p)-1pyp.
+
+(15)
+
+Under the linear observation model yp = pw + , this estimator is unbiased, satisfying E[w^ ] = w. Consequently, the bias term in the risk decomposition vanishes, and the total risk is governed solely by the predictive variance:
+
+RBLR := Eyp [f (w^ - w)2]
+
+= E[f (p p)-1p2].
+
+(16)
+
+Using the property that xx = Tr(xx) and the noise assumption E[] = 2I, we expand the expectation:
+
+RBLR = E[Tr f (pp)-1pp(p p)-1f ]
+
+= Tr f (pp)-1p E[]p(pp)-1f
+
+= 2 Tr f (pp)-1(p p)(p p)-1f
+
+= 2 Tr f (pp)-1f
+
+= 2 Tr(design).
+
+(17)
+
+Therefore, the condition for strict superiority, RBLR < RGA, holds if and only if 2 Tr(design) < µQ2. Rearranging terms yields the stated inequality.
+
+A.2. Proof of Proposition 3.2
+
+Proposition 3.2 (Reduction of Expected Wasserstein-2 Cost). Under the condition in Proposition 3.1, for target measure Q with finite second moments (not necessarily Gaussian), the regime-aware prior PBLR strictly reduces the expected Wasserstein-2 distance to Q compared to the standard Gaussian prior PGA:
+
+Eyp W22(PBLR(yp), Q) < W22(PGA, Q).
+
+(18)
+
+14
+
+A Regime-Aware Trajectory Prediction Framework for 1000+ Systems Biology Models
+
+Proof. We compare the transport costs associated with the uninformed prior PGA = N (0, i2nitI) and the regime-aware prior PBLR(yp) = N (µprior, i2nitI). Observe that both distributions share the same isotropic covariance i2nitI, differing only in their first moments.
+
+We invoke the translation invariance property of the Wasserstein-2 distance. For any probability measure µ with finite second moments and any target measure Q on a Euclidean space, the squared distance decomposes orthogonally into the distance between their means and the distance between their centered distributions (Remark 2.19 in (Peyre´ et al., 2019)):
+
+W22(µ, Q) = E[µ] - E[Q]22 + W22(µ¯, Q¯),
+
+(19)
+
+where µ¯ and Q¯ denote the centered distributions. Since the covariance of PBLR is fixed to i2nitI independent of the observation yp, its centered distribution is deterministic and identical to that of PGA. Specifically, P¯BLR = P¯GA = N (0, i2nitI). Consequently, the shape component of the transport cost is a constant, which we denote by Cshape := W22(N (0, i2nitI), Q¯).
+
+For the deterministic uninformed prior, the transport cost is thus:
+
+W22(PGA, Q) = 0 - µQ2 + Cshape = µQ2 + Cshape.
+
+(20)
+
+For the regime-aware prior, the cost is a random variable dependent on the historical observation yp. Taking the expectation over the observation noise yields:
+
+Eyp W22(PBLR(yp), Q) = Eyp µprior - µQ2 + Cshape = RBLR + Cshape.
+
+(21)
+
+Defining the reduction in expected transport cost as E := W22(PGA, Q) - Eyp [W22(PBLR, Q)], we find:
+
+E = (µQ2 + Cshape) - (RBLR + Cshape) = µQ2 - RBLR.
+
+(22)
+
+Under the condition established in Proposition 3.1, we have RBLR < µQ2, which implies E > 0.
+
+Thus, the regime-aware prior strictly reduces the expected Wasserstein-2 transport cost under the conditions of Proposition 3.1.
+
+B. Additional Experiments
+B.1. Empirical Validation of Theoretical Bounds
+
+||&||',((Tr()*+,-.)) > 1 ||&||',((Tr()*+,-.))  1
+
+Win: MSE!"# < MSE$% Loss: MSE!"#  MSE$%
+
+Mean Log ratio of MSE
+
+95% Condidence
+
+Win Rate (%) Log (MSE!"/MSE#$%)
+
+Total
+
+Complex
+
+Stable Oscillatory Monotonic
+
+Log ||&||'-((Tr()*+,-.))
+
+Figure 8. Left: Empirical win rate of the our BLR-induced regime-aware prior over an isotropic Gaussian initialization (ISO, N (0, i2nitI)) across regimes. Right: Empirical relationship between the theoretical bound term in Proposition 3.1 and the observed error ratio.
+To assess the practical utility of Proposition 3.1 in the finite-sample regime, we analyze the relationship between the theoretical bounds and the empirical performance gap of the BLR-induced and isotropic Gaussian (ISO, N (0, i2nitI))
+15
+
+A Regime-Aware Trajectory Prediction Framework for 1000+ Systems Biology Models
+
+Table 3. Comparing a fixed-variance prior to the BLR-induced covariance BLR on our benchmark. Each entry is reported as mean and ±std. Best mean results are in bold and second-best are underlined.
+
+Overall
+
+Complex
+
+Stable
+
+Oscillatory
+
+Monotonic
+
+Model
+
+MSE MAE CRPS MSE MAE CRPS MSE MAE CRPS MSE MAE CRPS MSE MAE CRPS
+
+Ours (i2nit)
+
+0.012 0.044 0.039 0.034 0.096 0.086 0.006 0.027 0.023 0.035 0.111 0.098 0.006 0.033 0.028 ±0.002 ±0.006 ±0.006 ±0.002 ±0.011 ±0.010 ±0.001 ±0.003 ±0.003 ±0.002 ±0.008 ±0.007 ±0.000 ±0.002 ±0.002
+
+Ours (BLR)
+
+0.014 ±0.003
+
+0.050 ±0.007
+
+0.046 ±0.007
+
+0.042 ±0.007
+
+0.110 ±0.018
+
+0.103 ±0.018
+
+0.007 ±0.001
+
+0.032 ±0.002
+
+0.029 ±0.002
+
+0.036 ±0.003
+
+0.113 ±0.007
+
+0.107 ±0.008
+
+0.006 ±0.001
+
+0.036 ±0.001
+
+0.033 ±0.001
+
+Table 4. Backbone ablation comparing SSM-based and self-attention models on our benchmark. Each entry is reported as mean and ±std. Best mean results are in bold and second-best are underlined.
+
+Overall
+
+Complex
+
+Stable
+
+Oscillatory
+
+Monotonic
+
+Model
+
+MSE MAE CRPS MSE MAE CRPS MSE MAE CRPS MSE MAE CRPS MSE MAE CRPS
+
+Ours (SSM)
+
+0.012 0.044 0.039 0.034 0.096 0.086 0.006 0.027 0.023 0.035 0.111 0.098 0.006 0.033 0.028 ±0.002 ±0.006 ±0.006 ±0.002 ±0.011 ±0.010 ±0.001 ±0.003 ±0.003 ±0.002 ±0.008 ±0.007 ±0.000 ±0.002 ±0.002
+
+Ours (Attention)
+
+0.012 ±0.001
+
+0.046 ±0.006
+
+0.041 ±0.005
+
+0.033 ±0.000
+
+0.097 ±0.007
+
+0.087 ±0.006
+
+0.006 ±0.001
+
+0.028 ±0.003
+
+0.025 ±0.003
+
+0.036 ±0.001
+
+0.114 ±0.008
+
+0.100 ±0.007
+
+0.006 ±0.001
+
+0.034 ±0.002
+
+0.030 ±0.002
+
+initializations. As illustrated in Figure 8 (Left), the BLR prior outperforms the ISO baseline across the majority of dynamic regimes. Crucially, this empirical advantage exhibits a strong alignment with our theoretical derivation. Figure 8 (Right) reveals a positive correlation between the magnitude of the theoretical bound and the observed log-error ratio. This result indicates that although Proposition 3.1 is derived under an asymptotic limit (  0), it serves as a robust and informative proxy for  > 0 settings. Thus, this bound effectively identifies scenarios where the mechanistic prior yields the most significant reduction in the Wasserstein transport cost, further validating the BLR initialization's superiority over the uninformed isotropic baseline.
+B.2. Empirical Benefits of a Covariance-Regularized Prior
+
+Residual (0, $(&$'I)
+
+Density Inference Time (ms)
+
+Residual (y! - "#$%#) Value
+
+Sequence Length
+
+Figure 9. Left: Residual distribution of y - µprior under the regime-aware prior. Right: Inference-time scaling of SSM and self-attention backbones with increasing prediction horizon, highlighting the superior long-horizon efficiency of SSM-based models.
+
+In practice, we instantiate the prior with a fixed variance i2nit rather than the BLR-induced BLR. As shown in Table 3, using the full BLR predictive covariance already yields strong accuracy (overall MSE 0.014), confirming that the Bayesian predictive distribution provides useful source information. Regularizing this covariance to an isotropic form further improves overall MSE/MAE/CRPS from 0.014/0.050/0.046 to 0.012/0.044/0.039, consistent with the mean-alignment argument in Section 3.3.4. Furthermore, Figure 9(left) shows that the residual y - µprior is well-approximated by a Gaussian, supporting the constant-variance approximation in this regime.
+B.3. Architecture Analysis: Attention and SSM
+We ablate the sequence module by replacing the Selective State Space Model (SSM) with a standard self-attention block. As shown in Table 4, the accuracy is largely preserved under this substitution (MSE/MAE/CRPS: 0.012/0.044/0.039 for SSM
+16
+
+A Regime-Aware Trajectory Prediction Framework for 1000+ Systems Biology Models
+
+Table 5. Performance comparison of TSFlow with different kernels at NFE=1 and NFE=16. Each entry is reported as mean and ±std. Best mean results are in bold and second-best are underlined.
+
+Overall
+
+Complex
+
+Stable
+
+Oscillatory
+
+Monotonic
+
+Model
+
+MSE MAE CRPS MSE MAE CRPS MSE MAE CRPS MSE MAE CRPS MSE MAE CRPS
+
+NFE = 1
+
+TSFlow-ISO
+
+0.026 ±0.002
+
+0.081 ±0.017
+
+0.074 ±0.015
+
+0.042 ±0.001
+
+0.112 ±0.013
+
+0.104 ±0.011
+
+0.017 ±0.003
+
+0.062 ±0.021
+
+0.057 ±0.019
+
+0.085 ±0.013
+
+0.208 ±0.007
+
+0.197 ±0.008
+
+0.009 ±0.004
+
+0.051 ±0.020
+
+0.045 ±0.018
+
+TSFlow-OU
+
+0.025 ±0.003
+
+0.081 0.074 ±0.012 ±0.010
+
+0.041 ±0.002
+
+0.115 0.107 ±0.011 ±0.010
+
+0.017 0.063 0.057 ±0.005 ±0.016 ±0.013
+
+0.079 0.200 0.190 ±0.008 ±0.005 ±0.006
+
+0.009 0.050 ±0.002 ±0.007
+
+0.044 ±0.005
+
+TSFlow-SE
+
+0.026 0.082 0.074 0.040 0.112 0.103 0.018 0.065 0.058 0.079 0.198 0.187 0.009 0.053 0.046 ±0.001 ±0.014 ±0.011 ±0.001 ±0.013 ±0.011 ±0.002 ±0.017 ±0.014 ±0.013 ±0.012 ±0.013 ±0.003 ±0.017 ±0.014
+
+TSFlow-PE
+
+0.025 0.078 0.072 0.042 0.112 0.104 0.017 0.059 0.054 0.084 0.208 0.195 0.008 0.047 0.041 ±0.003 ±0.011 ±0.010 ±0.001 ±0.009 ±0.009 ±0.003 ±0.012 ±0.011 ±0.006 ±0.006 ±0.005 ±0.002 ±0.010 ±0.009
+
+NFE = 16
+
+TSFlow-ISO
+
+0.027 ±0.002
+
+0.080 ±0.017
+
+0.059 ±0.011
+
+0.043 ±0.002
+
+0.112 ±0.012
+
+0.086 ±0.008
+
+0.018 ±0.004
+
+0.060 ±0.020
+
+0.043 ±0.014
+
+0.088 ±0.013
+
+0.208 ±0.008
+
+0.159 ±0.012
+
+0.010 ±0.004
+
+0.051 ±0.019
+
+0.040 ±0.014
+
+TSFlow-OU
+
+0.026 ±0.003
+
+0.077 0.056 ±0.012 ±0.008
+
+0.043 ±0.002
+
+0.113 0.086 ±0.010 ±0.013
+
+0.018 0.057 0.039 ±0.005 ±0.015 ±0.010
+
+0.083 0.199 0.152 ±0.007 ±0.004 ±0.007
+
+0.010 0.049 ±0.002 ±0.010
+
+0.037 ±0.009
+
+TSFlow-SE
+
+0.027 0.079 0.057 0.043 0.112 0.085 0.019 0.061 0.042 0.081 0.198 0.150 0.010 0.053 0.040 ±0.002 ±0.010 ±0.004 ±0.001 ±0.012 ±0.007 ±0.002 ±0.012 ±0.005 ±0.011 ±0.011 ±0.013 ±0.004 ±0.016 ±0.010
+
+TSFlow-PE
+
+0.026 0.075 0.055 0.044 0.111 0.086 0.017 0.055 0.038 0.088 0.208 0.158 0.008 0.044 0.033 ±0.003 ±0.011 ±0.007 ±0.001 ±0.009 ±0.008 ±0.004 ±0.012 ±0.008 ±0.007 ±0.007 ±0.006 ±0.002 ±0.008 ±0.006
+
+vs. 0.012/0.046/0.041 for Attention), indicating that the principal error reductions are not driven solely by the choice of sequence model. However, Figure 9 (right) indicates that SSM achieves lower inference time as the prediction length grows, making it preferable for long-term trajectory generation when computational scaling is a dominant constraint.
+B.4. TSFlow Baseline Results under Different Prior Kernels
+To establish a rigorous baseline, we evaluated the TSFlow architecture against the full spectrum of kernel configurations proposed in the original study. As detailed in Table 5, the variant equipped with the periodic kernel (TSFlow-PE) demonstrates superior pointwise accuracy compared to alternative instantiations on overall results. Crucially, this performance advantage extends to distributional metrics. Table 5 also confirms that TSFlow-PE achieves the lowest overall CRPS, validating its selection as the primary comparator for both deterministic and probabilistic assessments.
+B.5. Sensitivity to Number of Function Evaluations
+
+Number of Function Evaluations (NFE)
+
+Number of Function Evaluations (NFE)
+
+Number of Function Evaluations (NFE)
+
+Figure 10. Impact of the Number of Function Evaluations (NFE) on forecasting performance. Our method achieves near-optimal overall results with a single step (NFE=1). In contrast, the baseline TSFlow requires significantly more steps (NFE  16) to converge to the target distribution.
+
+We analyze the impact of the Number of Function Evaluations (NFE) in Figure 10. Our method achieves near-optimal deterministic and probabilistic performance at NFE = 1. This rapid convergence stems from the regime-aware prior, which structurally approximates the target to minimize the source data distributional mismatch, maximizing inference speed while maintaining competitive accuracy. In contrast, TSFlow initiates with uninformative prior, necessitating significantly more
+
+17
+
+A Regime-Aware Trajectory Prediction Framework for 1000+ Systems Biology Models
+
+Table 6. Computational cost comparison on a single NVIDIA RTX A6000 GPU. Training time is reported in hours, and inference time is reported per sample.
+
+Model
+
+Family Params Train (h) Infer. (ms) NFE
+
+DLinear
+
+Point
+
+iTransformer Point
+
+PatchTST Point
+
+TimeMixer Point
+
+TimeXer
+
+Point
+
+SMamba
+
+Point
+
+BiMamba4TS Point
+
+NSformer Point
+
+49.7 K 0.3
+
+4.9 M 0.5
+
+4.7 M 0.6
+
+133 K 0.5
+
+11.5 M 0.5
+
+3.0 M 0.5
+
+3.1 M 1.5
+
+2.0 M
+
+5
+
+0.092 ­ 0.966 ­ 0.800 ­ 3.135 ­ 2.104 ­ 2.300 ­ 2.496 ­ 3.000 ­
+
+CSDI TSDiff TSFlow
+
+Diffusion 413 K
+
+8
+
+Diffusion 946 K 10
+
+Flow
+
+1.9 M
+
+6
+
+90.8 50 552.6 100 71.9 16
+
+Ours
+
+Flow
+
+1.8 M
+
+7
+
+7.7
+
+1
+
+Table 7. Comparison with zero-shot time-series foundation models. Each entry reports the mean with standard deviation. Best and second-best performances are highlighted in bold and underline, respectively.
+
+Overall
+
+Complex
+
+Stable
+
+Oscillatory
+
+Monotonic
+
+Model
+
+MSE
+
+MAE
+
+MSE
+
+MAE
+
+MSE
+
+MAE
+
+MSE
+
+MAE
+
+MSE
+
+MAE
+
+TimeMoE Sundial TimesFM Chronos
+
+0.120±0.004 0.111±0.003 0.099±0.005 0.097±0.004
+
+0.231±0.010 0.217±0.007 0.152±0.004 0.167±0.000
+
+0.099±0.013 0.095±0.012 0.109±0.009 0.144±0.021
+
+0.191±0.032 0.185±0.031 0.145±0.021 0.181±0.012
+
+0.118±0.003 0.106±0.002 0.086±0.002 0.078±0.003
+
+0.221±0.010 0.203±0.008 0.138±0.006 0.147±0.002
+
+0.138±0.005 0.141±0.009 0.249±0.032 0.234±0.013
+
+0.268±0.005 0.270±0.009 0.299±0.014 0.309±0.007
+
+0.138±0.012 0.133±0.011 0.045±0.004 0.054±0.004
+
+0.289±0.023 0.281±0.022 0.112±0.007 0.153±0.005
+
+Ours
+
+0.012±0.002 0.044±0.006 0.034±0.002 0.096±0.011 0.006±0.001 0.027±0.003 0.035±0.002 0.111±0.008 0.006±0.000 0.033±0.002
+
+steps (NFE  16) to adequately resolve distributional features. Consequently, to ensure a fair comparison at peak capacity, we adopt NFE = 1 for our framework and NFE = 16 for TSFlow (similarly to (Kollovieh et al., 2024)) in all experiments.
+B.6. Computational Cost Comparison
+We provide a comprehensive computational cost comparison across all evaluated models in Table 6. All measurements were conducted on a single NVIDIA RTX A6000 GPU.
+When considered together with the predictive results in Table 1, these measurements show a clear trade-off between predictive performance and computational cost. Point forecasting methods provide fast training and inference (e.g., DLinear: 0.3 h training and 0.092 ms per sample), but have higher predictive errors on the main benchmark. Existing probabilistic baselines provide uncertainty-aware forecasts but often incur substantially higher inference cost, with diffusion-based CSDI and TSDiff requiring 50­100 function evaluations and over 90 ms per sample. TSFlow reduces the NFE to 16 but still requires 71.9 ms per sample. In contrast, RegimeFlow (Ours) performs inference in 7.7 ms with a single function evaluation (NFE = 1), making it 9.3× faster than TSFlow. With 1.8 M parameters and approximately 7 h training time, RegimeFlow keeps training cost comparable to standard probabilistic baselines while substantially reducing inference overhead.
+B.7. Comparison with Time-Series Foundation Models
+We further compare RegimeFlow against four representative zero-shot time-series foundation models (TSFMs): TimeMoE (Shi et al., 2025), Sundial (Liu et al., 2025b), TimesFM (Das et al., 2024), and Chronos (Ansari et al., 2024). These models are pretrained on large-scale general-purpose time-series corpora and support zero-shot inference, making them natural baselines for evaluating the advantage of domain-specific biological priors in cross-system generalization. All TSFMs are evaluated in the zero-shot setting on the same test trajectories and prediction horizons used in the main benchmark, without task-specific fine-tuning.
+Table 7 reports the results. Despite their massive pretraining scale (128­200 M parameters), all four TSFMs yield substantially higher errors than RegimeFlow. The strongest foundation model in the overall comparison, Chronos, achieves an overall MSE of 0.097, compared to 0.012 for Ours with only 1.8 M parameters. The gap is also pronounced on the Oscillatory subset:
+18
+
+A Regime-Aware Trajectory Prediction Framework for 1000+ Systems Biology Models
+
+Table 8. Performance on transient and hybrid dynamical regimes under the L = 96, T = 416 extrapolation setting. Each entry reports the mean.
+
+Ours
+
+TSFlow
+
+Case
+
+System
+
+MSE MAE MSE MAE
+
+Complex Oscil. Golomb2006 0.024
+
+Oscil.Stable Sharp2013
+
+0.035
+
+Damped Oscil. Radulescu2008 0.051
+
+0.092 0.116 0.151
+
+0.135 0.046 0.086
+
+0.275 0.159 0.216
+
+Channel-1
+
+Channel-2
+
+Channel-3
+
+Golomb2006 Value
+
+Time Step
+
+Time Step
+
+Time Step
+
+Time Step
+
+Time Step
+
+Time Step
+
+Sharp2013 Value
+
+Time Step
+
+Time Step
+
+Time Step
+
+Time Step
+
+Time Step
+
+Time Step
+
+Radulescu2008 Value
+
+Time Step
+
+Time Step
+
+Time Step
+
+Time Step
+
+Figure 11. Representative predictions on transient and hybrid regimes under the L = 96, T = 416 extrapolation setting. The selected cases include complex oscillations (Golomb2006), oscillation-to-stable transition (Sharp2013), and damped oscillations (Radulescu2008).
+
+the best TSFM reaches an MSE of 0.138, whereas Ours achieves 0.035. Chronos and TimesFM show even larger errors on this regime, suggesting that generic pretraining alone does not reliably capture sustained biological oscillations. This pattern indicates that general-purpose TSFMs, while strong zero-shot forecasting baselines, do not encode the biological regime structure required by this benchmark. In contrast, RegimeFlow combines a regime-aware prior with a condition-modulated sequence backbone, providing structural guidance tailored to long-horizon biological dynamics.
+B.8. Validation on Transient and Hybrid Dynamical Regimes
+To assess whether RegimeFlow remains effective beyond the three canonical regime categories, we evaluate it on three representative biological systems that exhibit transient or hybrid dynamical behaviors under a longer extrapolation setting with L = 96 observed points and a T = 416 prediction horizon: Golomb2006 (complex oscillations with no dominant single-regime pattern) (Golomb et al., 2006), Sharp2013 (oscillatory dynamics that transition to a stable steady state) (Sharp et al., 2013), and Radulescu2008 (decreasing-amplitude oscillations that dampen over time) (Radulescu et al., 2008). These cases are deliberately chosen because they do not fit neatly into a single macroscopic regime, testing whether the regime-aware prior provides flexible guidance rather than a rigid constraint. As shown in Table 8 and Figure 11, RegimeFlow obtains lower errors than TSFlow across all three representative transient cases. On Golomb2006 (complex oscillation), RegimeFlow reduces MSE from 0.135 to 0.024, an 82% improvement, suggesting that the structured prior remains useful even when the dynamics do not follow a single canonical pattern. On Sharp2013 (oscillation-to-stable transition), both methods show higher error, as expected for a regime-switching system; RegimeFlow's MSE of 0.035 versus 0.046 for TSFlow suggests that the prior provides partial guidance without over-constraining the flow. On Radulescu2008 (decreasing oscillation), RegimeFlow achieves an MSE of 0.051 compared to 0.086 for TSFlow, a 41% improvement. These results indicate that RegimeFlow's regime-aware prior can still capture the underlying structure of the dynamics, even when the system exhibits transient or hybrid behaviors that do not fit neatly into a single macroscopic regime category.
+19
+
+A Regime-Aware Trajectory Prediction Framework for 1000+ Systems Biology Models
+
+Baseline (TSFlow)
+
+Baseline (TSFlow)
+
+Ours (w/o AdaLN + PE)
+
+Ours (w/o AdaLN + BLR)
+
+Ours (w/ AdaLN + BLR)
+
+MSE
+Training Horizon (256)
+MAE
+Training Horizon (256)
+
+Extrapolation Region
+
+Extrapolation Region
+
+Prediction Horizon
+
+Prediction Horizon
+
+Figure 12. Extrapolation performance across extended prediction lengths. PE denotes the baseline initialized with a Periodic Kernel prior, while BLR represents our proposed regime-aware prior induced by Bayesian Linear Regression. Models trained on a fixed length (T = 256) are evaluated on longer trajectories, demonstrating the superior generalization of our proposed framework.
+
+B.9. Robustness to Extrapolation Length
+B.9.1. QUANTITATIVE EVALUATION OF LONG-HORIZON EXTRAPOLATION
+To evaluate the generalization capability of our framework, we investigate its performance when extrapolating to prediction lengths significantly beyond the training setup (Ttrain = 256). As illustrated in Figure 12, our full model (w/ AdaLN + BLR) maintains high predictive fidelity across extended lengths, effectively mitigating the degradation typically observed in autoregressive or iterative generation.
+Disentangling the drivers of this robustness yields two primary insights. First, the architectural superiority of our framework is demonstrated by the performance gap between our Periodic (PE) variant (w/o AdaLN + PE) and the TSFlow baseline. Unlike the standard S4-based architecture employed in TSFlow, our backbone leverages the enhanced receptivity of modern Selective State Space Models to capture long-range dependencies. Second, a comparison of the conditioned variants underscores the essential role of the prior. The model initialized with the BLR-induced distribution (w/o AdaLN + BLR) consistently outperforms both the TSFlow model and our own model initialized with the PE kernel (w/o AdaLN + PE). This result highlights the superior efficacy of the BLR prior in capturing underlying dynamic patterns compared to the PE kernel. This indicates that the mechanistic prior encodes invariant dynamic properties that persist beyond the training window, whereas the standard PE kernel struggles to generalize to unseen temporal coordinates.
+B.9.2. QUALITATIVE VISUALIZATION OF EXTENDED TRAJECTORY PREDICTIONS
+As shown in Figure 13, we select five dynamical systems with qualitatively different regime patterns, each of which can be described by mechanistic ordinary differential equation models commonly used in prior studies (Tomasz et al., 2004; Fribourg et al., 2014; Pritchard & Birch, 2014; Yildirim & Mackey, 2003; Bungay et al., 2006).
+Overall, our method demonstrates strong adaptability: even with a long extrapolation horizon of T = 416, it can still capture the global trajectory trend with high fidelity. When the underlying series exhibits regime changes, Ours(w/o AdaLN) already tracks most regime-wise trend variations well, highlighting the effectiveness of the regime-aware prior during extrapolation. When the series is relatively regime-agnostic, the comparison between Ours-PE(w/o AdaLN) and TSFlow shows that our backbone yields more accurate predictions, supporting the advantage of our backbone design.
+As illustrated in Figure 14, we selected five representative oscillatory systems exhibiting distinct temporal patterns, including cell division cycles and genetic network dynamics (Tyson, 1991; Locke et al., 2005; Li et al., 2009; Adams et al., 2012; Conradie et al., 2010).
+The comparative analysis reveals that our proposed method consistently achieves superior predictive fidelity across these
+20
+
+A Regime-Aware Trajectory Prediction Framework for 1000+ Systems Biology Models
+
+Ours
+
+TSFlow
+
+Ours(w/o AdaLN)
+
+Ours-PE (w/o AdaLN)
+
+TSFlow
+
+Tiwari2019
+
+Fribourg2014
+
+Pritchard2014
+
+Yildirim2003
+
+Bungay2006
+
+Figure 13. Qualitative comparison of extrapolation trajectories (T = 416) across five systems exhibiting distinct regimes. We compare Ours against the state-of-the-art baseline TSFlow and two ablations: Ours (w/o AdaLN) and Ours-PE (w/o AdaLN). Ours-PE denotes the variant initialized with a standard Periodic Kernel prior, while Ours employs our proposed regime-aware prior. The visualization highlights the model's capability to capture long-term trends under diverse dynamic patterns.
+21
+
+A Regime-Aware Trajectory Prediction Framework for 1000+ Systems Biology Models
+
+Ours
+
+TSFlow
+
+Ours(w/o AdaLN)
+
+Ours-PE (w/o AdaLN)
+
+TSFlow
+
+Tyson1991
+
+Locke2005
+
+Li2009
+
+Adams2012
+
+Conradie2010
+
+Figure 14. Qualitative visualization of predicted trajectories across five distinct oscillatory biological systems. We compare the extrapolation performance (T = 416) of Ours against the baseline TSFlow and ablation variants (Ours w/o AdaLN, Ours-PE w/o AdaLN). The results demonstrate that our regime-aware prior initialization significantly enhances the capture of diverse oscillatory patterns compared to standard periodic kernel methods.
+22
+
+A Regime-Aware Trajectory Prediction Framework for 1000+ Systems Biology Models
+
+Table 9. Robustness evaluation under measurement noise and irregular sampling. Each entry reports the mean with standard deviation. MSE is computed on the overall MSE as (1 - Ours/TSFlow) × 100%. The Clean setting from the main benchmark (Table 1) is
+included as reference.
+
+Overall
+
+Complex
+
+Stable
+
+Oscillatory
+
+Monotonic
+
+Setting Model
+
+MSE
+
+MAE MSE MSE
+
+MAE
+
+MSE
+
+MAE
+
+MSE
+
+MAE
+
+MSE
+
+MAE
+
+Clean
+
+Ours 0.012±0.002 0.044±0.006 TSFlow 0.016±0.004 0.064±0.013
+
+25.0%
+
+0.034±0.002 0.096±0.011 0.006±0.001 0.027±0.003 0.035±0.002 0.111±0.008 0.006±0.000 0.033±0.002 0.039±0.005 0.111±0.022 0.008±0.002 0.046±0.010 0.044±0.005 0.139±0.017 0.008±0.001 0.050±0.005
+
+Noisy-0.1
+
+Ours 0.041±0.004 0.134±0.009 TSFlow 0.045±0.003 0.140±0.006
+
+8.9%
+
+0.089±0.019 0.200±0.024 0.031±0.005 0.117±0.013 0.074±0.014 0.188±0.017 0.027±0.003 0.121±0.004 0.089±0.011 0.199±0.018 0.031±0.005 0.117±0.009 0.081±0.007 0.197±0.015 0.046±0.010 0.154±0.019
+
+Noisy-0.3
+
+Ours 0.059±0.002 0.178±0.003 TSFlow 0.067±0.014 0.187±0.021
+
+11.9%
+
+0.098±0.014 0.233±0.015 0.050±0.002 0.164±0.008 0.099±0.012 0.234±0.012 0.040±0.010 0.160±0.022 0.104±0.018 0.230±0.025 0.048±0.012 0.161±0.023 0.110±0.009 0.242±0.007 0.094±0.044 0.232±0.053
+
+Irregular-48
+
+Ours TSFlow
+
+0.038±0.005 0.054±0.009
+
+0.123±0.010 0.163±0.018
+
+29.6%
+
+0.074±0.013 0.181±0.025 0.027±0.002 0.103±0.008 0.102±0.006 0.241±0.008 0.014±0.002 0.075±0.005 0.097±0.010 0.214±0.016 0.039±0.007 0.144±0.016 0.124±0.010 0.263±0.013 0.042±0.014 0.139±0.026
+
+Irregular-24
+
+Ours TSFlow
+
+0.080±0.004 0.095±0.012
+
+0.202±0.008 0.233±0.017
+
+15.8%
+
+0.111±0.015 0.234±0.021 0.072±0.001 0.195±0.005 0.150±0.006 0.297±0.007 0.036±0.005 0.131±0.009 0.133±0.016 0.271±0.023 0.074±0.011 0.210±0.017 0.195±0.012 0.348±0.011 0.089±0.019 0.226±0.027
+
+diverse oscillation modes. Crucially, the performance gap between Ours (including its variant w/o AdaLN) and the regime-agnostic Ours-PE (w/o AdaLN) underscores the critical role of the regime-aware prior. This regime-aware prior provides a robust structural initialization that is essential for accurate long-term extrapolation. In contrast, although TSFlow also incorporates regime information, its performance is constrained by a less accurate initial trajectory shape relative to our approach. This discrepancy in initialization induces optimization bias in later stages, preventing the baseline from fully recovering the true oscillatory dynamics.
+B.10. Robustness to Measurement Noise and Irregular Sampling
+To assess the robustness of RegimeFlow under conditions that approximate real-world experimental data, we evaluate both RegimeFlow (Ours) and TSFlow under two forms of data degradation: (1) measurement noise, where additive Gaussian perturbations x + s with   N (0, 1) and s  {0.1, 0.3} are applied to the observed trajectories; and (2) irregular sampling, where the observation window is randomly subsampled, retaining only 48 or 24 out of the original 96 time points. As shown in Table 9, RegimeFlow consistently outperforms TSFlow across all overall robustness settings. Under mild noise (s=0.1), the regime-aware prior preserves an 8.9% MSE advantage; under stronger noise (s=0.3), the advantage remains meaningful at 11.9%, indicating that the regime-aware prior partially attenuates noise through its closed-form projection onto the basis subspace. Under irregular sampling, RegimeFlow exhibits particularly strong robustness: with only 24 irregular observations (Irregular-24), RegimeFlow achieves an MSE of 0.080 compared to 0.095 for TSFlow (15.8% improvement), and with 48 observations the improvement reaches 29.6%. This resilience is attributable to the regime-aware prior's ability to recover the underlying trend from sparse observations via the selected basis family, providing a structurally informed initialization even when data density is low. Table 9 also reports regime-wise breakdowns for completeness, while MSE is computed from the overall results.
+C. Implementation Details
+In this section, we provide a comprehensive overview of the experimental setup to facilitate reproducibility. We detail the baseline models, hyperparameter configurations, and training protocols used in our evaluation. All experiments were implemented in PyTorch and executed on a workstation equipped with a single NVIDIA A6000 GPU.
+C.1. Baseline Descriptions
+To evaluate the effectiveness of our proposed framework, we benchmarked against a diverse set of state-of-the-art methods, categorized into Point Time-Series Forecasting architectures and Generative Probabilistic Forecasting models.
+23
+
+A Regime-Aware Trajectory Prediction Framework for 1000+ Systems Biology Models
+C.1.1. POINT TIME-SERIES FORECASTING. We acknowledge the Time-Series-Library1 for providing a unified codebase for time-series forecasting. All point forecasting baselines reported in this work were implemented based on this framework to ensure a fair and standardized comparison.
+· DLinear (Zeng et al., 2023): A simple yet effective decomposition-based linear model that separates time series into trend and seasonal components.
+· iTransformer (Liu et al., 2023): An inverted Transformer architecture that embeds the entire temporal sequence of each variate as a token to capture multivariate correlations.
+· PatchTST (Nie, 2022): A channel-independent Transformer model that utilizes patching to segment time series into sub-series tokens, preserving local semantic information.
+· TimeMixer (Wang et al., 2024a): An MLP-based architecture designed for multi-scale time-series mixing.
+· TimeXer (Wang et al., 2024b): A Transformer-based framework specialized in empowering time-series forecasting by effectively incorporating exogenous variables.
+· NSformer (Liu et al., 2022): A Transformer-based model specifically designed to address the challenges of nonstationary time series.
+· SMamba (Wang et al., 2025): A selective state-space model (SSM) adapted for time-series forecasting, leveraging the efficiency of the Mamba architecture.
+· BiMamba4TS (Liang et al., 2024): A bidirectional state-space model that extends Mamba to capture temporal dependencies from both forward and backward directions.
+C.1.2. GENERATIVE PROBABILISTIC FORECASTING. · CSDI (Tashiro et al., 2021): A conditional score-based diffusion model originally designed for time-series imputation.
+· TSDiff (Kollovieh et al., 2023): A diffusion-based model that introduces a self-guidance mechanism to regularize the generation process.
+· TSFlow (Kollovieh et al., 2024): A conditional flow matching model for probabilistic time series forecasting that combines Gaussian process priors.
+C.1.3. TIME-SERIES FOUNDATION MODELS (ZERO-SHOT).
+We evaluate four representative zero-shot time-series foundation models (TSFMs) to assess how large-scale general-purpose pretraining performs relative to domain-specific biological priors in cross-system trajectory prediction. All TSFMs are evaluated in the zero-shot setting on the same test trajectories.
+· TimeMoE (Shi et al., 2025): A decoder-only sparse mixture-of-experts (MoE) Transformer, pretrained on over 300 billion time points spanning nine domains. Public checkpoint: https://huggingface.co/Maple728/Time MoE-200M.
+· Sundial (Liu et al., 2025b): A patch-based decoder-only Transformer, trained with a flow-matching objective (TimeFlow Loss) on one trillion time points. Public checkpoint: https://huggingface.co/thuml/sundial-base-1 28m.
+· TimesFM (Das et al., 2024): A decoder-only patched Transformer, pretrained by Google Research on approximately 100 billion time points from web, retail, traffic, and energy domains. Public checkpoint: https://huggingface. co/google/timesfm-1.0-200m.
+· Chronos (Ansari et al., 2024): A T5-based encoder-decoder Transformer that tokenizes time series via scaling and quantization, trained with a cross-entropy loss on 84 billion tokens from public datasets augmented with synthetic Gaussian process data. Public checkpoint: https://huggingface.co/amazon/chronos-t5-base.
+1https://github.com/thuml/Time-Series-Library
+24
+
+A Regime-Aware Trajectory Prediction Framework for 1000+ Systems Biology Models
+
+Table 10. Hyperparameter configurations for RegimeFlow and baseline models. Family categorizes the modeling paradigm. NFE denotes the Number of Function Evaluations per inference step. D and M correspond to the backbone's hidden dimension and layer count, respectively.
+
+Model
+DLinear iTransformer PatchTST TimeMixer TimeXer NSformer S-Mamba BiMamba4TS
+CSDI TSDiff TSFlow
+Ours
+
+Family
+Point Point Point Point Point Point Point Point
+Diffusion Diffusion Flow
+Flow
+
+Hidden Dim (D)
+512 512 512 16 512 256 256 256
+64 128 256
+96
+
+Layers (M )
+2 3 2 3 4 2 4 4
+4 6 4
+4
+
+LR
+1 × 10-3 2 × 10-4 2 × 10-4 2 × 10-4 1 × 10-4 2 × 10-4 1 × 10-4 1 × 10-4
+1 × 10-3 1 × 10-4 8 × 10-4
+8 × 10-4
+
+NFE
+-
+50 100 16
+1
+
+C.2. Hyperparameter Settings
+We summarize the key hyperparameters used for Ours (RegimeFlow) and all baselines in Table 10. For Ours, we use M = 4 condition-modulated residual blocks and the backbone hidden size is D = 96. We employ a BLR-induced regime-aware prior with (, ) = (5, 10). Specifically, we employ an exponential basis set {1-e-0.2 , 1-e-2.0 , 1-e-5.0 }, augmented with polynomial terms of degree 2 and a single harmonic component. The prior scale is initialized to init = 0.247. All models are optimized with AdamW.
+C.3. Training Protocol
+C.3.1. OPTIMIZATION CONFIGURATION.
+All experiments were conducted using 32-bit floating-point precision (FP32). The models were trained using learning rates ranging from 10-4 to 10-3 and a weight decay of 10-6. To ensure training stability, we employed a maximum batch size of 2048 and applied Exponential Moving Average (EMA) to the model parameters with a decay rate of 0.995, commencing after 200 optimization steps. The learning schedule included a warmup period of 50 epochs, and validation evaluations were performed every 10 epochs.
+C.3.2. DATA AND TRAINING SETUP.
+The dataset was partitioned into training, validation, and test sets with ratios of 0.7, 0.1, and 0.2, respectively. We configured the data sequences with an input observation length of 96, a prediction horizon of 256, and a sliding window stride of 16. All models were trained for a maximum of 500 epochs, utilizing an early stopping strategy monitoring the validation MSE loss with a patience of 5 epochs.
+C.4. Regime Assignment Procedure
+Regime labels are assigned per coordinate trajectory, not per biological system. For a model with multiple state variables, each coordinate is analyzed independently, so different variables from the same system may receive different (cpat, cfreq) labels. The assignment follows a two-step procedure.
+Automated trajectory analysis. For each coordinate trajectory, we first apply a rule-based detector to assign the discrete pattern label cpat and, when applicable, the frequency label cfreq. Because biological trajectories can be sinusoidal, pulselike, square-wave, damped, or only partially observed, we combine multiple criteria rather than relying on a single test. Oscillatory trajectories are detected using peak/valley periodicity, zero-crossing regularity around the trajectory mean, and FFT-based spectral evidence for a dominant periodic component. For oscillatory coordinates, cfreq is estimated from the dominant periodic component; otherwise, cfreq = 0. Monotonic trajectories are identified by a persistent global trend and consistent directional changes across local segments. Stable trajectories are identified by near-zero tail slope and decreasing
+25
+
+A Regime-Aware Trajectory Prediction Framework for 1000+ Systems Biology Models
+local variation, indicating convergence to a steady state. Coordinates that do not satisfy these criteria are assigned to the Complex category, for which we use the intercept-only fallback basis  = {1}.
+Manual validation. All automatically generated labels were manually reviewed by visually inspecting trajectory plots, with particular attention to borderline cases such as weak oscillations, damped oscillations, and slow convergence. When the automated label was clearly inconsistent with the observed trajectory shape, it was corrected. The six fine-grained trajectory types are mapped to the four regime groups used in the paper as follows: complex  Complex; increasing-stable and decreasing-stable  Stable; oscillation  Oscillatory; monotonic increasing and monotonic decreasing  Monotonic. In the released SysBio-Traj metadata, these assignments are stored for each coordinate trajectory together with the trajectory type, bounds, and estimated period when applicable.
+D. Benchmark Statistics and Specifications for 1,050 Systems Biology Models
+
+
+
+ 
+  
+ 
+
+     
+
+
+
+
+ 
+  
+ 
+
+       
+
+
+
+
+
+
+
+     
+
+ 
+
+
+
+
+
+
+
+ 
+
+
+
+
+
+ 
+
+
+
+
+
+
+Figure 15. Statistical overview of the curated biological ODE benchmark. Top Left: Distribution of system dimensionality (number of state variables). Top Right: Distribution of reaction counts per system. Bottom Left: Distribution of parameter space size (number of ODE parameters). Bottom Right: Joint distribution (scatter plot) of system dimensions versus biological reactions.
+
+In this section we analyze the structural and dynamical composition of our benchmark suite, which contains 1,050 distinct biological ODE systems sourced from (Malik-Sheriff et al., 2020).
+D.1. Benchmark Overview
+Figure 1 (left) shows that the dataset spans a broad taxonomic spectrum, with mammalian systems accounting for the majority, that particularly those modeling Homo sapiens and Mus musculus. Figure 15 illustrates the statistical profile of our benchmark, comprising 1,050 biological ODE systems. It highlights the structural heterogeneity across system dimensions, reaction counts, and parameter distributions.
+To rigorously assess generalization, we adopt a strict system-wise split in which training and test sets contain disjoint biological systems. This partition forces the model to learn system invariant dynamical patterns rather than memorizing system specific behavior, ensuring that predictive performance reflects genuine extrapolation capability.
+26
+
+A Regime-Aware Trajectory Prediction Framework for 1000+ Systems Biology Models Trajectory generation. Each system is modeled in the Systems Biology Markup Language (SBML) format and simulated using the Tellurium library (Medley et al., 2018). The SBML file is parsed to recover the governing ODEs, parameters, and initial conditions; the system dynamics are then numerically integrated to produce trajectories sampled at 512 uniformly spaced time points. Regime labels are assigned per coordinate using the automated detection and manual validation procedure described in Appendix C.4, and are stored alongside the trajectory data and model source files in the released benchmark.
+27
+
+A Regime-Aware Trajectory Prediction Framework for 1000+ Systems Biology Models
+
+D.2. Systems Biology Model Specifications and Metadata
+
+Table 11. Full list of 1,050 ODE-based models, including model ID, paper reference, biological domain, system and parameter dimensions, and Trajectory Time Span. "-" indicates unclassified taxonomy or biological process.
+
+Model ID
+
+Reference
+
+BIOMD0000000003 BIOMD0000000004 BIOMD0000000005 BIOMD0000000006 BIOMD0000000008 BIOMD0000000009 BIOMD0000000010 BIOMD0000000011 BIOMD0000000012 BIOMD0000000013 BIOMD0000000014 BIOMD0000000015 BIOMD0000000016 BIOMD0000000017 BIOMD0000000018
+
+Goldbeter1991 Goldbeter1991 Tyson1991 Tyson1991 Gardner1998 Huang1996 Kholodenko2000 Levchenko2000 Elowitz2000 Poolman2004 Levchenko2000 Curto1998 Goldbeter1995 Hoefnagel2002 Morrison1989
+
+BIOMD0000000019 Schoeberl2002 BIOMD0000000020 Hodgkin1952
+
+BIOMD0000000021 BIOMD0000000022 BIOMD0000000023 BIOMD0000000026 BIOMD0000000027 BIOMD0000000028 BIOMD0000000029 BIOMD0000000030 BIOMD0000000031 BIOMD0000000032
+
+Leloup1999 Ueda2001 Rohwer2001 Markevich2004 Markevich2004 Markevich2004 Markevich2004 Markevich2004 Markevich2004 Kofahl2004
+
+BIOMD0000000033 Brown2004
+
+BIOMD0000000035 BIOMD0000000036 BIOMD0000000037 BIOMD0000000038 BIOMD0000000039 BIOMD0000000041 BIOMD0000000042 BIOMD0000000043 BIOMD0000000044 BIOMD0000000045 BIOMD0000000046 BIOMD0000000047 BIOMD0000000048
+
+Vilar2002 Tyson1999 Marwan2003 Rohwer2000 Marhl2000 Kongas2007 Nielsen1998 Borghans1997 Borghans1997 Borghans1997 Olsen2003 Oxhamre2005 Kholodenko1999
+
+Domain
+
+Sys. Dim.
+
+Taxonomy-Amphibia
+
+3
+
+Taxonomy-Amphibia
+
+5
+
+Taxonomy-Opisthokonta
+
+6
+
+Taxonomy-Opisthokonta
+
+2
+
+Taxonomy-Amphibia
+
+5
+
+Taxonomy-Xenopus laevis
+
+26
+
+Taxonomy-Xenopus laevis
+
+8
+
+Taxonomy-Xenopus laevis
+
+22
+
+Taxonomy-Escherichia coli
+
+6
+
+Taxonomy-Nicotiana tabacum
+
+18
+
+Taxonomy-Xenopus laevis
+
+86
+
+Taxonomy-Homo sapiens
+
+16
+
+Taxonomy-Drosophila melanogaster
+
+6
+
+Taxonomy-Lactococcus lactis
+
+11
+
+Taxonomy-Homo sapiens|KEGG Pathway- 20 One carbon pool by folate|KEGG PathwayFolate biosynthesis
+
+Taxonomy-Homo sapiens
+
+93
+
+Taxonomy-Loligo forbesii|Gene Ontology- 4 giant axon
+
+Taxonomy-Drosophila melanogaster
+
+10
+
+Taxonomy-Drosophila melanogaster
+
+10
+
+Taxonomy-Saccharum officinarum
+
+5
+
+Taxonomy-Xenopus laevis
+
+11
+
+Taxonomy-Xenopus laevis
+
+5
+
+Taxonomy-Xenopus laevis
+
+16
+
+Taxonomy-Xenopus laevis
+
+6
+
+Taxonomy-Xenopus laevis
+
+18
+
+Taxonomy-Xenopus laevis
+
+6
+
+Taxonomy-Saccharomyces cerevisiae|
+
+36
+
+Gene Ontology-MAPK cascade
+
+Taxonomy-cellular organisms|Gene
+
+32
+
+Ontology-epidermal growth factor receptor
+
+signaling pathway|Gene Ontology-
+
+neurotrophin TRK receptor signaling
+
+pathway
+
+Taxonomy-cellular organisms
+
+9
+
+Taxonomy-Drosophila melanogaster
+
+2
+
+Taxonomy-Physarum polycephalum
+
+11
+
+Taxonomy-Escherichia coli
+
+13
+
+Taxonomy-Xenopus laevis
+
+5
+
+Taxonomy-Oryctolagus
+
+10
+
+Taxonomy-Saccharomyces cerevisiae
+
+15
+
+Taxonomy-Rattus
+
+5
+
+Taxonomy-Rattus
+
+4
+
+Taxonomy-Rattus
+
+4
+
+Taxonomy-Armoracia rusticana
+
+12
+
+Taxonomy-Rattus
+
+3
+
+Taxonomy-Rattus norvegicus
+
+23
+
+Par. Dim.
+15 15 10 5 23 31 22 30 16 77 300 111 18 71 107
+
+Time Span
+[0.0, 60.0] [0.0, 70.0] [0.0, 100.0] [0.0, 110.0] [0.0, 40.0] [0.0, 80.0] [0.0, 3500.0] [0.0, 290.2] [0.0, 450.0] [0.0, 0.4] [0.0, 241.0] [0.0, 20000.0] [0.0, 60.0] [0.0, 0.4] [0.0, 500000.0]
+
+90
+
+[0.0, 300.0]
+
+27
+
+[0.0, 25.0]
+
+48
+
+[0.0, 80.0]
+
+66
+
+[0.0, 70.0]
+
+54
+
+[0.0, 1949.2]
+
+16
+
+[0.0, 1698.4]
+
+9
+
+[0.0, 1327.2]
+
+27
+
+[0.0, 1760.4]
+
+15
+
+[0.0, 1843.2]
+
+32
+
+[0.0, 1243.4]
+
+9
+
+[0.0, 250.0]
+
+47
+
+[0.0, 225.0]
+
+48
+
+[0.0, 100.0]
+
+16
+
+[0.0, 60.0]
+
+11
+
+[0.0, 60.0]
+
+12
+
+[0.0, 95.6]
+
+20
+
+[0.0, 0.004]
+
+11
+
+[0.0, 30.0]
+
+25
+
+[0.0, 0.5]
+
+25
+
+[0.0, 30.0]
+
+13
+
+[0.0, 5.0]
+
+17
+
+[0.0, 7.0]
+
+15
+
+[0.0, 55.0]
+
+15
+
+[0.0, 1000.0]
+
+17
+
+[0.0, 50.0]
+
+50
+
+[0.0, 103.2]
+
+Continued on next page
+
+28
+
+A Regime-Aware Trajectory Prediction Framework for 1000+ Systems Biology Models
+
+Model ID
+
+Reference
+
+BIOMD0000000049 Sasagawa2005
+
+BIOMD0000000050 Martins2003 BIOMD0000000051 Chassagnole2002
+
+BIOMD0000000052 Brands2002
+BIOMD0000000054 Ataullahkhanov 1996
+
+BIOMD0000000055 BIOMD0000000056 BIOMD0000000057 BIOMD0000000058
+
+Locke2005 Chen2004 Sneyd2002 Bindschadler 2001
+
+BIOMD0000000059 Fridlyand2003
+
+BIOMD0000000060 Keizer1996
+
+BIOMD0000000061 Hynne2001 BIOMD0000000062 Bhartiya2003 BIOMD0000000063 Galazzo1990
+
+BIOMD0000000064 BIOMD0000000065 BIOMD0000000067 BIOMD0000000068
+
+Teusink2000 Yildirim2003 Fung2005 Curien2003
+
+BIOMD0000000069 Fuss2006
+
+Domain
+Taxonomy-Rattus|Gene Ontology-MAPK cascade|Gene Ontology-epidermal growth factor receptor signaling pathway|Gene Ontology-Ras protein signal transduction| Gene Ontology-neurotrophin TRK receptor signaling pathway
+Taxonomy-cellular organisms
+Taxonomy-Escherichia coli|Gene Ontology-glycolytic process|Gene Ontology-pentose-phosphate shunt|Gene Ontology-phosphoenolpyruvatedependent sugar phosphotransferase system|KEGG Pathway-Glycolysis / Gluconeogenesis|KEGG Pathway-Pentose phosphate pathway
+Taxonomy-cellular organisms
+Taxonomy-Homo sapiens|Gene Ontologyregulation of sodium ion transport|Gene Ontology-regulation of glycolytic process| Gene Ontology-AMP biosynthetic process
+Taxonomy-Arabidopsis
+Taxonomy-Saccharomyces cerevisiae
+Taxonomy-Rattus rattus
+Taxonomy-Rattus norvegicus|Gene Ontology-calcium-mediated signaling| Gene Ontology-inositol phosphatemediated signaling
+Taxonomy-Mus musculus|Gene Ontologyregulation of insulin secretion|Gene Ontology-regulation of calcium-mediated signaling
+Taxonomy-cellular organisms|Gene Ontology-ryanodine-sensitive calciumrelease channel activity|Gene Ontologycalcium-mediated signaling|Gene Ontology-calcium-induced calcium release activity
+Taxonomy-Saccharomyces cerevisiae
+Taxonomy-Escherichia coli
+Taxonomy-Saccharomyces cerevisiae| Gene Ontology-glycolytic process
+Taxonomy-Saccharomyces cerevisiae
+Taxonomy-Escherichia coli
+Taxonomy-Escherichia coli (strain K12)
+Taxonomy-Arabidopsis thaliana|Gene Ontology-threonine biosynthetic process| Gene Ontology-L-methionine biosynthetic process from O-phospho-L-homoserine and cystathionine|KEGG Pathway-Glycine, serine and threonine metabolism|KEGG Pathway-map00271
+Taxonomy-Homo sapiens
+
+Sys. Dim. 94
+14 18
+11 3
+13 50 6 4
+8
+4
+22 3 5 19 8 7 4
+10
+
+Par. Dim. Time Span
+
+234
+
+[0.0, 1385.2]
+
+16
+
+[0.0, 351.8]
+
+142
+
+[0.0, 800.0]
+
+11
+
+[0.0, 1487.2]
+
+10
+
+[0.0, 253.6]
+
+67
+
+[0.0, 52.0]
+
+164
+
+[0.0, 225.0]
+
+33
+
+[0.0, 4.6]
+
+29
+
+[0.0, 20.0]
+
+97
+
+[0.0, 220000.0]
+
+11
+
+[0.0, 8.0]
+
+69
+
+[0.0, 3.0]
+
+18
+
+[0.0, 168.0]
+
+61
+
+[0.0, 0.8]
+
+85
+
+[0.0, 2.4]
+
+23
+
+[0.0, 200.4]
+
+21
+
+[0.0, 100.0]
+
+6
+
+[0.0, 800.0]
+
+20
+
+[0.0, 100.0]
+
+Continued on next page
+
+29
+
+A Regime-Aware Trajectory Prediction Framework for 1000+ Systems Biology Models
+
+Model ID
+
+Reference
+
+BIOMD0000000070 Holzhutter2004
+
+BIOMD0000000071 BIOMD0000000072 BIOMD0000000073 BIOMD0000000074 BIOMD0000000075 BIOMD0000000076 BIOMD0000000077 BIOMD0000000078 BIOMD0000000079 BIOMD0000000081
+
+Bakker2001 Yi2003 Leloup2003 Leloup2003 Xu2003 Cronwright2002 Blum2000 Leloup2003 Goldbeter2006 Suh2004
+
+BIOMD0000000083 Leloup2003 BIOMD0000000084 Hornberg2005
+
+BIOMD0000000089 BIOMD0000000090 BIOMD0000000091 BIOMD0000000093 BIOMD0000000094 BIOMD0000000096 BIOMD0000000097 BIOMD0000000098 BIOMD0000000099 BIOMD0000000100
+
+Locke2006 Wolf2001 Proctor2005 Yamada2003 Yamada2003 Zeilinger2006 Zeilinger2006 Goldbeter1990 Laub1998 Rozi2003
+
+BIOMD0000000101 Vilar2006
+
+BIOMD0000000102 BIOMD0000000103 BIOMD0000000104 BIOMD0000000105 BIOMD0000000106 BIOMD0000000107 BIOMD0000000109 BIOMD0000000110 BIOMD0000000111 BIOMD0000000112 BIOMD0000000113 BIOMD0000000114 BIOMD0000000115
+
+Legewie2006 Legewie2006 Klipp2002 Proctor2007 Yang2007 Novak1993 Haberichter2007 Qu2003 Novak2001 Clarke2006 Dupont1992 Somogyi1990 Somogyi1990
+
+Domain
+
+Sys. Dim.
+
+Taxonomy-Homo sapiens|Gene Ontology- 40 glycolytic process|Gene Ontology-pentosephosphate shunt|Gene Ontologyglutathione metabolic process|KEGG Pathway-Glycolysis / Gluconeogenesis Homo sapiens (human)|KEGG PathwayPentose phosphate pathway - Homo sapiens (human)
+
+Taxonomy-Trypanosoma brucei
+
+23
+
+Taxonomy-Saccharomyces cerevisiae
+
+7
+
+Taxonomy-Mammalia
+
+16
+
+Taxonomy-Mammalia
+
+19
+
+Taxonomy-Mus musculus
+
+10
+
+Taxonomy-Saccharomyces cerevisiae
+
+1
+
+Taxonomy-cellular organisms
+
+8
+
+Taxonomy-Mammalia
+
+16
+
+Taxonomy-Homo sapiens
+
+3
+
+Taxonomy-Homo sapiens|Gene Ontology- 21 lipid metabolic process|Gene Ontologyphospholipase C-activating G-protein coupled acetylcholine receptor signaling pathway
+
+Taxonomy-Mammalia
+
+19
+
+Taxonomy-Mammalia|KEGG Pathway- 8 MAPK signaling pathway - Rattus norvegicus (rat)
+
+Taxonomy-Arabidopsis thaliana
+
+16
+
+Taxonomy-Saccharomyces cerevisiae
+
+13
+
+Taxonomy-cellular organisms
+
+15
+
+Taxonomy-Mus musculus
+
+33
+
+Taxonomy-Mus musculus
+
+33
+
+Taxonomy-Arabidopsis
+
+19
+
+Taxonomy-Arabidopsis
+
+19
+
+Taxonomy-cellular organisms
+
+2
+
+Taxonomy-Dictyostelium
+
+7
+
+Taxonomy-cellular organisms|Gene
+
+4
+
+Ontology-phosphorylase kinase regulator
+
+activity|KEGG Pathway-Calcium signaling
+
+pathway - Homo sapiens (human)
+
+Taxonomy-cellular organisms|Reactome- 6 Signaling by TGF-beta Receptor Complex| KEGG Pathway-TGF-beta signaling pathway - Homo sapiens (human)
+
+Taxonomy-cellular organisms
+
+13
+
+Taxonomy-cellular organisms
+
+17
+
+Taxonomy-cellular organisms
+
+6
+
+Taxonomy-Eukaryota
+
+35
+
+Taxonomy-Homo sapiens
+
+25
+
+Taxonomy-Amphibia
+
+9
+
+Taxonomy-Mammalia
+
+57
+
+Taxonomy-Eukaryota
+
+15
+
+Taxonomy-Schizosaccharomycetaceae
+
+10
+
+Taxonomy-Neovison vison
+
+10
+
+Taxonomy-cellular organisms
+
+4
+
+Taxonomy-Rattus
+
+2
+
+Taxonomy-Rattus
+
+2
+
+Par. Dim. Time Span
+
+166
+
+[0.0, 9.6]
+
+72
+
+[0.0, 0.8]
+
+8
+
+[0.0, 1500.0]
+
+80
+
+[0.0, 52.0]
+
+95
+
+[0.0, 70.0]
+
+30
+
+[0.0, 87.8]
+
+18
+
+[0.0, 1.6]
+
+10
+
+[0.0, 12.0]
+
+81
+
+[0.0, 60.0]
+
+11
+
+[0.0, 23.0]
+
+35
+
+[0.0, 12.0]
+
+64
+
+[0.0, 100.0]
+
+18
+
+[0.0, 34.0]
+
+78
+
+[0.0, 55.0]
+
+28
+
+[0.0, 85.0]
+
+21
+
+[0.0, 150.0]
+
+72
+
+[0.0, 1000.0]
+
+70
+
+[0.0, 4500.0]
+
+94
+
+[0.0, 80.0]
+
+93
+
+[0.0, 75.0]
+
+13
+
+[0.0, 5.0]
+
+14
+
+[0.0, 14.5]
+
+30
+
+[0.0, 3.0]
+
+9
+
+[0.0, 1935.6]
+
+41
+
+[0.0, 2000.0]
+
+49
+
+[0.0, 2000.0]
+
+2
+
+[0.0, 10.4]
+
+17
+
+[0.0, 300000.0]
+
+54
+
+[0.0, 49.6]
+
+36
+
+[0.0, 200.0]
+
+61
+
+[0.0, 1981.6]
+
+30
+
+[0.0, 150.0]
+
+53
+
+[0.0, 300.0]
+
+17
+
+[0.0, 600.0]
+
+19
+
+[0.0, 2.5]
+
+8
+
+[0.0, 200.0]
+
+8
+
+[0.0, 15.0]
+
+Continued on next page
+
+30
+
+A Regime-Aware Trajectory Prediction Framework for 1000+ Systems Biology Models
+
+Model ID BIOMD0000000117 BIOMD0000000118 BIOMD0000000119 BIOMD0000000121 BIOMD0000000122 BIOMD0000000123 BIOMD0000000124 BIOMD0000000125 BIOMD0000000126 BIOMD0000000128 BIOMD0000000131 BIOMD0000000134 BIOMD0000000135 BIOMD0000000137 BIOMD0000000138 BIOMD0000000143 BIOMD0000000144 BIOMD0000000145
+BIOMD0000000146
+BIOMD0000000147 BIOMD0000000148 BIOMD0000000149
+BIOMD0000000151
+BIOMD0000000156 BIOMD0000000157 BIOMD0000000158 BIOMD0000000159 BIOMD0000000160 BIOMD0000000161
+BIOMD0000000162 BIOMD0000000163 BIOMD0000000164 BIOMD0000000165 BIOMD0000000166
+
+Reference Dupont1991 Golomb2006 Golomb2006 Clancy2001 Fisher2006 Fisher2006 Wu2006 Komarova2005 Clancy2002 Bertram2006 Izhikevich2004 Izhikevich2004 Izhikevich2004 Sedaghat2002 Tabak2007 Olsen2003B Calzone2007 Wang2007
+Hatakeyama2003
+ODea2007 Komarova2003 Kim2007
+Singh2006
+Zatorsky2006 Zatorsky2006 Zatorsky2006 Zatorsky2006 Xie2007 Eungdamrong 2007 Hernjak2005 Zi2007 SmithAE2002 Saucerman2006 Zhu2007
+
+Domain
+Taxonomy-cellular organisms Taxonomy-Rattus Taxonomy-Rattus Taxonomy-Cavia porcellus Taxonomy-Mammalia Taxonomy-Mammalia Taxonomy-Rattus Taxonomy-Opisthokonta Taxonomy-Chordata Taxonomy-Rattus Taxonomy-Mammalia Taxonomy-Mammalia Taxonomy-Mammalia Taxonomy-Homo sapiens Taxonomy-Chordata Taxonomy-Mammalia Taxonomy-Drosophila Taxonomy-cellular organisms|Gene Ontology-positive regulation of cytosolic calcium ion concentration involved in phospholipase C-activating G-protein coupled signaling pathway|KEGG Pathway-Calcium signaling pathway Homo sapiens (human) Taxonomy-Cricetinae|Gene Ontologyregulation of MAP kinase activity|Gene Ontology-regulation of protein kinase B signaling Taxonomy-Mus musculus Taxonomy-Chordata Taxonomy-Homo sapiens|Gene OntologyMAPK cascade|Gene Ontology-canonical Wnt signaling pathway|KEGG PathwayMAPK signaling pathway - Homo sapiens (human)|KEGG Pathway-Wnt signaling pathway - Homo sapiens (human) Taxonomy-Eukaryota|Gene OntologyMAPK cascade|Gene Ontology-JAK-STAT cascade|KEGG Pathway-MAPK signaling pathway - Mus musculus (mouse)|KEGG Pathway-Jak-STAT signaling pathway Mus musculus (mouse) Taxonomy-Homo sapiens Taxonomy-Homo sapiens Taxonomy-Homo sapiens Taxonomy-Homo sapiens Taxonomy-Drosophila melanogaster Taxonomy-cellular organisms|Gene Ontology-Ras protein signal transduction Taxonomy-Chordata Taxonomy-cellular organisms Taxonomy-Mammalia Taxonomy-Rattus norvegicus Taxonomy-cellular organisms
+
+Sys. Dim. 2 5 9 6 12 14 7 5 9 7 2 2 2 21 4 20 17 7
+36
+24 7 28
+66
+3 3 3 3 24 43
+24 16 26 36 3
+
+Par. Dim.
+15 45 69 19 23 22 57 7 24 50 8 8 8 40 40 24 46 32
+
+Time Span
+[0.0, 40.0] [0.0, 420.0] [0.0, 230.0] [0.0, 1500.0] [0.0, 300.0] [0.0, 679.2] [0.0, 800.0] [0.0, 10.0] [0.0, 300.0] [0.0, 500.0] [0.0, 200.0] [0.0, 180.0] [0.0, 200.0] [0.0, 70.0] [0.0, 500.0] [0.0, 52.0] [0.0, 300.0] [0.0, 600.0]
+
+75
+
+[0.0, 15000.0]
+
+73
+
+[0.0, 445.8]
+
+13
+
+[0.0, 120.0]
+
+59
+
+[0.0, 2100.0]
+
+105
+
+[0.0, 2000.0]
+
+7
+
+[0.0, 15.0]
+
+8
+
+[0.0, 17.0]
+
+14
+
+[0.0, 13.0]
+
+7
+
+[0.0, 50.0]
+
+47
+
+[0.0, 52.0]
+
+131
+
+[0.0, 250.0]
+
+202
+
+[0.0, 35.0]
+
+20
+
+[0.0, 494.0]
+
+64
+
+[0.0, 20.4]
+
+62
+
+[0.0, 192.2]
+
+22
+
+[0.0, 1.25]
+
+Continued on next page
+
+31
+
+A Regime-Aware Trajectory Prediction Framework for 1000+ Systems Biology Models
+
+Model ID
+
+Reference
+
+BIOMD0000000167 Mayya2005
+
+BIOMD0000000168
+BIOMD0000000169 BIOMD0000000170 BIOMD0000000171 BIOMD0000000172 BIOMD0000000174 BIOMD0000000175 BIOMD0000000176
+
+Obeyesekere 1999 Aguda1999 Weimann2004 Leloup1998 Pritchard2002 Zerial2008 Birtwistle2007 Conant2007
+
+BIOMD0000000177 Conant2007
+
+BIOMD0000000178 Lebeda2008
+
+BIOMD0000000179 BIOMD0000000180 BIOMD0000000181 BIOMD0000000182
+
+Kim2007 Kim2007 Sriram2007 Neves2008
+
+BIOMD0000000184
+BIOMD0000000185 BIOMD0000000188 BIOMD0000000189 BIOMD0000000190
+
+Lavrentovich 2008 Locke2008 Proctor2008 Proctor2008 Caso2006
+
+BIOMD0000000191 BIOMD0000000192 BIOMD0000000195 BIOMD0000000197 BIOMD0000000198 BIOMD0000000199 BIOMD0000000201 BIOMD0000000202 BIOMD0000000203
+BIOMD0000000204
+BIOMD0000000205 BIOMD0000000206 BIOMD0000000207 BIOMD0000000208 BIOMD0000000209
+BIOMD0000000210
+BIOMD0000000211
+
+ez2008 rlich2003 Tyson2001 Bartholome2007 Stone1996 Santolini2001 Goldbeter2008 ChenXF2008 Chickarmane 2006 Chickarmane 2006 Ung2008 Wolf2000 Romond1999 Deineko2003 Chickarmane 2008 Chickarmane 2008 Albert2005
+
+Domain
+Taxonomy-cellular organisms|KEGG Pathway-Jak-STAT signaling pathway Homo sapiens (human) Taxonomy-Eukaryota
+
+Sys. Dim. Par. Dim. Time Span
+
+8
+
+14
+
+[0.0, 5000.0]
+
+7
+
+21
+
+[0.0, 60.0]
+
+Taxonomy-Mammalia
+
+11
+
+32
+
+[0.0, 1000.0]
+
+Taxonomy-Mammalia
+
+7
+
+27
+
+[0.0, 52.0]
+
+Taxonomy-Drosophila melanogaster
+
+10
+
+41
+
+[0.0, 50.0]
+
+Taxonomy-Saccharomyces cerevisiae
+
+17
+
+87
+
+[0.0, 1.2]
+
+Taxonomy-Homo sapiens
+
+4
+
+18
+
+[0.0, 1000.0]
+
+Taxonomy-Homo sapiens
+
+118
+
+240
+
+[0.0, 800.0]
+
+Taxonomy-Saccharomyces cerevisiae|
+
+17
+
+98
+
+[0.0, 5.2]
+
+Gene Ontology-glycolytic process|KEGG
+
+Pathway-Glycolysis / Gluconeogenesis -
+
+Saccharomyces cerevisiae (budding yeast)
+
+Taxonomy-Saccharomyces cerevisiae|
+
+18
+
+97
+
+[0.0, 6.2]
+
+Gene Ontology-glycolytic process|KEGG
+
+Pathway-Glycolysis / Gluconeogenesis -
+
+Saccharomyces cerevisiae (budding yeast)
+
+Taxonomy-Mus musculus|Taxonomy-
+
+5
+
+5
+
+[0.0, 30000.0]
+
+Rattus norvegicus|Taxonomy-Homo
+
+sapiens
+
+Taxonomy-cellular organisms
+
+7
+
+18
+
+[0.0, 30.0]
+
+Taxonomy-cellular organisms
+
+8
+
+20
+
+[0.0, 80.0]
+
+Taxonomy-Opisthokonta
+
+6
+
+25
+
+[0.0, 225.0]
+
+Taxonomy-Rattus norvegicus|Gene
+
+37
+
+83
+
+[0.0, 1643.6]
+
+Ontology-MAPK cascade|Gene Ontology-
+
+activation of adenylate cyclase activity
+
+Taxonomy-Mammalia|Gene Ontology-
+
+3
+
+calcium-mediated signaling
+
+14
+
+[0.0, 400.0]
+
+Taxonomy-Mammalia
+
+8
+
+19
+
+[0.0, 55.0]
+
+Taxonomy-Homo sapiens
+
+18
+
+21
+
+[0.0, 40000.0]
+
+Taxonomy-Homo sapiens
+
+16
+
+16
+
+[0.0, 50000.0]
+
+Taxonomy-Mammalia|TaxonomyRodentia
+
+11
+
+56
+
+[0.0, 4000.0]
+
+Taxonomy-Mammalia
+
+2
+
+18
+
+[0.0, 120.0]
+
+Taxonomy-Homo sapiens
+
+11
+
+16
+
+[0.0, 60.0]
+
+Taxonomy-Saccharomyces cerevisiae
+
+11
+
+37
+
+[0.0, 330.0]
+
+Taxonomy-Mammalia
+
+5
+
+12
+
+[0.0, 5000.0]
+
+Taxonomy-Bos taurus
+
+11
+
+16
+
+[0.0, 1.2]
+
+Taxonomy-Rattus norvegicus
+
+9
+
+10
+
+[0.0, 8.0]
+
+Taxonomy-Amniota
+
+22
+
+71
+
+[0.0, 225.0]
+
+Taxonomy-cellular organisms
+
+10
+
+38
+
+[0.0, 60.0]
+
+Taxonomy-Mus musculus|Taxonomy-
+
+5
+
+Homo sapiens
+
+32
+
+[0.0, 5.2]
+
+Taxonomy-Mus musculus|Taxonomy-
+
+5
+
+Homo sapiens
+
+32
+
+[0.0, 5.2]
+
+Taxonomy-Eukaryota
+
+194
+
+313
+
+[0.0, 5000.0]
+
+Taxonomy-Saccharomyces cerevisiae
+
+9
+
+18
+
+[0.0, 0.35]
+
+Taxonomy-Eukaryota
+
+6
+
+32
+
+[0.0, 2500.0]
+
+Taxonomy-Mammalia
+
+6
+
+18
+
+[0.0, 1000.0]
+
+Taxonomy-Homo sapiens
+
+8
+
+49
+
+[0.0, 94.0]
+
+Taxonomy-Homo sapiens
+
+8
+
+46
+
+[0.0, 1329.2]
+
+Taxonomy-Trypanosoma brucei
+
+24
+
+81
+
+[0.0, 1.2]
+
+Continued on next page
+
+32
+
+A Regime-Aware Trajectory Prediction Framework for 1000+ Systems Biology Models
+
+Model ID
+
+Reference
+
+BIOMD0000000212 BIOMD0000000213 BIOMD0000000214 BIOMD0000000216 BIOMD0000000217 BIOMD0000000218 BIOMD0000000219 BIOMD0000000220
+
+Curien2009 Nijhout2004 Akman2008 Hong2009 Bruggeman2005 Singh2006 Singh2006 Albeck2008
+
+BIOMD0000000221 BIOMD0000000222 BIOMD0000000223 BIOMD0000000224 BIOMD0000000225 BIOMD0000000226 BIOMD0000000227 BIOMD0000000228 BIOMD0000000229
+
+Singh2006 Singh2006 Borisov2009 Meyer1991 Westermark2003 Radulescu2008 Radulescu2008 Swat2004 Ma2002
+
+BIOMD0000000230 BIOMD0000000231 BIOMD0000000233 BIOMD0000000236 BIOMD0000000237 BIOMD0000000238 BIOMD0000000239 BIOMD0000000240
+
+Ihekwaba2004 Valero2006 Wilhelm2009 Westermark2003 Schaber2006 Overgaard2007 Jiang2007 Veening2008
+
+BIOMD0000000241 BIOMD0000000242 BIOMD0000000243 BIOMD0000000244 BIOMD0000000247 BIOMD0000000249
+
+Shi1993 Bai2003 Neumann2010 Kotte2010 Ralser2007 Restif2006
+
+BIOMD0000000250 BIOMD0000000253 BIOMD0000000254 BIOMD0000000255 BIOMD0000000256
+
+Nakakuki2010 Teusink1998 Bier2000 Chen2009 Rehm2006
+
+BIOMD0000000257 BIOMD0000000258 BIOMD0000000259 BIOMD0000000260 BIOMD0000000261 BIOMD0000000262 BIOMD0000000263 BIOMD0000000264 BIOMD0000000265 BIOMD0000000267
+
+Piedrafita2010 Ortega2006 Tiago2010 Tiago2010 Tiago2010 Fujita2010 Fujita2010 Fujita2010 Conradie2010 Lebeda2008
+
+Domain
+Taxonomy-Arabidopsis thaliana Taxonomy-Mammalia Taxonomy-Neurospora crassa Taxonomy-Mammalia Taxonomy-Escherichia coli Taxonomy-Mycobacterium tuberculosis Taxonomy-Mycobacterium tuberculosis Taxonomy-Homo sapiens
+
+Sys. Dim.
+8 6 16 5 12 9 9 58
+
+Taxonomy-Escherichia coli
+
+8
+
+Taxonomy-Escherichia coli
+
+8
+
+Taxonomy-Homo sapiens
+
+86
+
+Taxonomy-Rattus rattus
+
+4
+
+Taxonomy-Mammalia
+
+2
+
+Taxonomy-Mus musculus
+
+14
+
+Taxonomy-Mus musculus
+
+45
+
+Taxonomy-Mammalia
+
+9
+
+Taxonomy-Dictyostelium discoideum|
+
+7
+
+KEGG Pathway-Bacterial chemotaxis -
+
+Xanthomonas campestris pv. campestris
+
+ATCC 33913
+
+Taxonomy-Mus musculus
+
+24
+
+Taxonomy-Bos taurus
+
+5
+
+Taxonomy-cellular organisms
+
+2
+
+Taxonomy-Mammalia
+
+3
+
+Taxonomy-Saccharomyces cerevisiae
+
+24
+
+Taxonomy-Macaca fascicularis
+
+3
+
+Taxonomy-Homo sapiens
+
+59
+
+Taxonomy-Octodon degus|Taxonomy-
+
+6
+
+Bacillus subtilis
+
+Taxonomy-Homo sapiens
+
+5
+
+Taxonomy-Murinae
+
+6
+
+Taxonomy-Homo sapiens
+
+23
+
+Taxonomy-Escherichia coli
+
+47
+
+Taxonomy-Saccharomyces cerevisiae
+
+24
+
+Taxonomy-Bordetella pertussis|Taxonomy- 9 Homo sapiens
+
+Taxonomy-Homo sapiens
+
+47
+
+Taxonomy-Saccharomyces cerevisiae
+
+3
+
+Taxonomy-Saccharomyces cerevisiae
+
+4
+
+Taxonomy-Homo sapiens
+
+500
+
+Taxonomy-Homo sapiens|Brenda Tissue 27 Ontology-HeLa cell
+
+Taxonomy-cellular organisms
+
+8
+
+Taxonomy-cellular organisms
+
+3
+
+Taxonomy-Mus musculus
+
+17
+
+Taxonomy-Mus musculus
+
+17
+
+Taxonomy-Mus musculus
+
+17
+
+Taxonomy-Rattus norvegicus
+
+9
+
+Taxonomy-Rattus norvegicus
+
+9
+
+Taxonomy-Rattus norvegicus
+
+11
+
+Taxonomy-Mammalia
+
+23
+
+Taxonomy-Mus musculus|Taxonomy-
+
+4
+
+Rattus norvegicus|Taxonomy-Homo
+
+sapiens
+
+Par. Dim.
+64 38 38 18 98 66 70 77
+49 49 162 11 19 31 88 40 14
+
+Time Span
+[0.0, 1933.2] [0.0, 0.3] [0.0, 55.0] [0.0, 55.0] [0.0, 4.4] [0.0, 150.0] [0.0, 197.6] [0.0, 1000000. 0] [0.0, 2.5] [0.0, 48.6] [0.0, 972.8] [0.0, 90.0] [0.0, 500.0] [0.0, 18000.0] [0.0, 200000.0] [0.0, 1970.0] [0.0, 17.0]
+
+64
+
+[0.0, 16000.0]
+
+9
+
+[0.0, 200.4]
+
+4
+
+[0.0, 10.0]
+
+26
+
+[0.0, 420.0]
+
+46
+
+[0.0, 600.0]
+
+56
+
+[0.0, 350.0]
+
+306
+
+[0.0, 464.4]
+
+23
+
+[0.0, 50000.0]
+
+19
+
+[0.0, 30.0]
+
+26
+
+[0.0, 75.0]
+
+17
+
+[0.0, 800.0]
+
+213
+
+[0.0, 16000.0]
+
+135
+
+[0.0, 15.8]
+
+21
+
+[0.0, 20.0]
+
+141
+
+[0.0, 1250.0]
+
+26
+
+[0.0, 7.0]
+
+7
+
+[0.0, 140.0]
+
+239
+
+[0.0, 10000.0]
+
+99
+
+[0.0, 28.8]
+
+19
+
+[0.0, 400.0]
+
+9
+
+[0.0, 21.6]
+
+29
+
+[0.0, 400.0]
+
+29
+
+[0.0, 600.0]
+
+29
+
+[0.0, 600.0]
+
+24
+
+[0.0, 1300.0]
+
+24
+
+[0.0, 1962.0]
+
+26
+
+[0.0, 738.4]
+
+88
+
+[0.0, 30.0]
+
+4
+
+[0.0, 398.8]
+
+Continued on next page
+
+33
+
+A Regime-Aware Trajectory Prediction Framework for 1000+ Systems Biology Models
+
+Model ID
+
+Reference
+
+BIOMD0000000268 Reed2008
+
+BIOMD0000000269 Liu2010 BIOMD0000000270 Schilling2009 BIOMD0000000271 Becker2010
+
+BIOMD0000000272 Becker2010
+
+BIOMD0000000273 BIOMD0000000274 BIOMD0000000275 BIOMD0000000276 BIOMD0000000277 BIOMD0000000281
+
+Pokhilko2010 Rattanakul2003 Goldbeter2007 Shrestha2010 Shrestha2010 Chance1960
+
+BIOMD0000000282 BIOMD0000000283 BIOMD0000000284 BIOMD0000000286 BIOMD0000000287 BIOMD0000000288 BIOMD0000000289 BIOMD0000000290 BIOMD0000000291 BIOMD0000000292 BIOMD0000000293 BIOMD0000000294
+
+Chance1952 Chance1943 Hofmeyer1986 Proctor2010 Passos2010 Wang2009 Alexander2010 Alexander2010 Nikolaev2005 Rovers1995 Proctor2010 Restif2007
+
+BIOMD0000000295 BIOMD0000000296 BIOMD0000000297 BIOMD0000000298 BIOMD0000000299 BIOMD0000000300 BIOMD0000000301 BIOMD0000000303 BIOMD0000000304
+
+Akman2008 Balagadde´2008 Ciliberto2003 Leloup1999 Leloup1999 Schmierer2010 Friedland2009 Liu2011 Plant1981
+
+BIOMD0000000305 BIOMD0000000309 BIOMD0000000312 BIOMD0000000313
+
+Kolomeisky2003 Tyson2003 Tyson2003 Raia2010
+
+BIOMD0000000314 Raia2011
+
+BIOMD0000000315 BIOMD0000000318 BIOMD0000000319 BIOMD0000000320 BIOMD0000000321
+
+Montagne2011 Yao2008 Decroly1982 Grange2001 Grange2001
+
+Domain
+
+Sys. Dim.
+
+Taxonomy-Homo sapiens|Brenda Tissue 34 Ontology-hepatocyte
+
+Taxonomy-Arabidopsis thaliana
+
+9
+
+Taxonomy-Mus musculus
+
+33
+
+Taxonomy-Murinae|Brenda Tissue
+
+6
+
+Ontology-hematopoietic cell line
+
+Taxonomy-Murinae|Brenda Tissue
+
+6
+
+Ontology-hematopoietic cell line
+
+Taxonomy-Arabidopsis thaliana
+
+19
+
+Taxonomy-Chordata
+
+3
+
+Taxonomy-Vertebrata
+
+5
+
+Taxonomy-Homo sapiens
+
+3
+
+Taxonomy-Homo sapiens
+
+3
+
+Taxonomy-Homo sapiens|Brenda Tissue 32 Ontology-ascites tumor cell
+
+Taxonomy-Equus caballus
+
+5
+
+Taxonomy-Armoracia rusticana
+
+4
+
+Taxonomy-Bacteria
+
+6
+
+Taxonomy-Mammalia
+
+54
+
+Taxonomy-Homo sapiens
+
+21
+
+Taxonomy-Homo sapiens
+
+19
+
+Taxonomy-Metazoa
+
+4
+
+Taxonomy-Metazoa
+
+4
+
+Taxonomy-Eukaryota
+
+10
+
+Taxonomy-Viridiplantae
+
+3
+
+Taxonomy-Homo sapiens
+
+131
+
+Taxonomy-Bordetella pertussis|Taxonomy- 11 Homo sapiens
+
+Taxonomy-Neurospora crassa
+
+5
+
+Taxonomy-Escherichia coli
+
+5
+
+Taxonomy-Schizosaccharomyces pombe 19
+
+Taxonomy-Drosophila melanogaster
+
+10
+
+Taxonomy-Neurospora crassa
+
+3
+
+Taxonomy-Homo sapiens
+
+3
+
+Taxonomy-Escherichia coli (strain K12) 8
+
+Taxonomy-Homo sapiens
+
+42
+
+Taxonomy-Aplysia|Brenda Tissue
+
+5
+
+Ontology-abdominal ganglion|Brenda
+
+Tissue Ontology-neuron
+
+Taxonomy-Eukaryota
+
+6
+
+Taxonomy-cellular organisms
+
+1
+
+Taxonomy-cellular organisms
+
+2
+
+Taxonomy-Homo sapiens|Reactome-
+
+15
+
+Signaling by Interleukins|KEGG Pathway-
+
+Jak-STAT signaling pathway - Homo
+
+sapiens (human)
+
+Taxonomy-Homo sapiens|Reactome-
+
+11
+
+Signaling by Interleukins|KEGG Pathway-
+
+Jak-STAT signaling pathway - Homo
+
+sapiens (human)
+
+Taxonomy-cellular organisms
+
+19
+
+Taxonomy-Mammalia
+
+7
+
+Taxonomy-cellular organisms
+
+3
+
+Taxonomy-Rattus norvegicus
+
+9
+
+Taxonomy-Rattus norvegicus
+
+3
+
+Par. Dim. Time Span
+
+159
+
+[0.0, 60.0]
+
+32
+
+[0.0, 100.0]
+
+39
+
+[0.0, 80.0]
+
+10
+
+[0.0, 600.0]
+
+9
+
+[0.0, 50000.0]
+
+99
+
+[0.0, 55.0]
+
+13
+
+[0.0, 8000.0]
+
+24
+
+[0.0, 43.2]
+
+21
+
+[0.0, 700.0]
+
+21
+
+[0.0, 800.0]
+
+54
+
+[0.0, 65.6]
+
+4
+
+[0.0, 0.4]
+
+2
+
+[0.0, 32.6]
+
+0
+
+[0.0, 48.2]
+
+58
+
+[0.0, 75000.0]
+
+36
+
+[0.0, 300000.0]
+
+45
+
+[0.0, 136.4]
+
+15
+
+[0.0, 150.0]
+
+16
+
+[0.0, 200.0]
+
+13
+
+[0.0, 245.0]
+
+6
+
+[0.0, 500.0]
+
+92
+
+[0.0, 877.6]
+
+22
+
+[0.0, 100.0]
+
+17
+
+[0.0, 50.0]
+
+12
+
+[0.0, 350.0]
+
+81
+
+[0.0, 290.0]
+
+39
+
+[0.0, 55.0]
+
+11
+
+[0.0, 50.0]
+
+16
+
+[0.0, 7.6]
+
+36
+
+[0.0, 980.0]
+
+90
+
+[0.0, 50000.0]
+
+34
+
+[0.0, 23000.0]
+
+15
+
+[0.0, 0.3]
+
+9
+
+[0.0, 2000.0]
+
+5
+
+[0.0, 40.0]
+
+18
+
+[0.0, 50000.0]
+
+12
+
+[0.0, 50000.0]
+
+47
+
+[0.0, 250.0]
+
+31
+
+[0.0, 20.0]
+
+7
+
+[0.0, 220.0]
+
+31
+
+[0.0, 18.4]
+
+18
+
+[0.0, 12.0]
+
+Continued on next page
+
+34
+
+A Regime-Aware Trajectory Prediction Framework for 1000+ Systems Biology Models
+
+Model ID
+
+Reference
+
+BIOMD0000000322 BIOMD0000000323 BIOMD0000000325 BIOMD0000000326 BIOMD0000000327
+
+Kim2011 Kim2011 Palini2011 DellOrco2009 Whitcomb2004
+
+BIOMD0000000328 BIOMD0000000329 BIOMD0000000330 BIOMD0000000331 BIOMD0000000332 BIOMD0000000333 BIOMD0000000334 BIOMD0000000337 BIOMD0000000342 BIOMD0000000344 BIOMD0000000346
+
+Bucher2011 Kummer2000 Larsen2004 Larsen2004 Bungay2006 Bungay2006 Bungay2003 Pfeiffer2001 Zi2011 Proctor2011 FitzHugh1961
+
+BIOMD0000000347 Bachmann2011
+
+BIOMD0000000348 BIOMD0000000350 BIOMD0000000351 BIOMD0000000352 BIOMD0000000354 BIOMD0000000355 BIOMD0000000357 BIOMD0000000358 BIOMD0000000359 BIOMD0000000360 BIOMD0000000361 BIOMD0000000363 BIOMD0000000364 BIOMD0000000366 BIOMD0000000368 BIOMD0000000369 BIOMD0000000370 BIOMD0000000371 BIOMD0000000372 BIOMD0000000373 BIOMD0000000374 BIOMD0000000375 BIOMD0000000376 BIOMD0000000377 BIOMD0000000378 BIOMD0000000379 BIOMD0000000382 BIOMD0000000383 BIOMD0000000384 BIOMD0000000385 BIOMD0000000386 BIOMD0000000387 BIOMD0000000388 BIOMD0000000389
+
+Fridlyand2010 Troein2011 Vernoux2011 Vernoux2011 Abell2011 Abell2011 Lee2010 Stortelder1997 Panteleev2002 Panteleev2002B Panteleev2002 Lee2010 Lee2010 Orfao2008 Beltrami1995 Beltrami1995 Vinod2011 DeVries2000 Tolic2000 Bertram2004 Bertram1995 Mears1997 Bertram2007 Bertram2000 Chay1997 DallaMan2007 Sturis1991 Arnold2011 Arnold2011 Arnold2011 Arnold2011 Arnold2011 Arnold2011 Arnold2011
+
+Domain
+Taxonomy-cellular organisms Taxonomy-cellular organisms Taxonomy-Saccharomyces cerevisiae Taxonomy-Mus musculus Taxonomy-Homo sapiens|Brenda Tissue Ontology-pancreatic duct Taxonomy-Homo sapiens Taxonomy-Rattus norvegicus Taxonomy-Rattus norvegicus Taxonomy-Rattus norvegicus Taxonomy-Homo sapiens Taxonomy-Homo sapiens Taxonomy-Homo sapiens Taxonomy-cellular organisms Taxonomy-Homo sapiens Taxonomy-Chordata Taxonomy-cellular organisms|Brenda Tissue Ontology-nerve Taxonomy-Mus musculus|Brenda Tissue Ontology-erythroid progenitor cell Taxonomy-Homo sapiens Taxonomy-Ostreococcus tauri Taxonomy-Arabidopsis Taxonomy-Arabidopsis Taxonomy-Drosophila Taxonomy-Drosophila Taxonomy-Eukaryota Taxonomy-Eukaryota Taxonomy-Eukaryota Taxonomy-Eukaryota Taxonomy-Eukaryota Taxonomy-Eukaryota Taxonomy-Homo sapiens Taxonomy-Eukaryota Taxonomy-Eukaryota Taxonomy-Eukaryota Taxonomy-Saccharomyces cerevisiae Taxonomy-Homo sapiens Taxonomy-Homo sapiens Taxonomy-Homo sapiens Taxonomy-Homo sapiens Taxonomy-Homo sapiens Taxonomy-Homo sapiens Taxonomy-Homo sapiens Taxonomy-Homo sapiens Taxonomy-Homo sapiens Taxonomy-Homo sapiens Taxonomy-Viridiplantae Taxonomy-Viridiplantae Taxonomy-Viridiplantae Taxonomy-Viridiplantae Taxonomy-Viridiplantae Taxonomy-Viridiplantae Taxonomy-Viridiplantae
+
+Sys. Dim.
+4 3 5 71 4
+
+Par. Dim.
+14 6 15 96 44
+
+Time Span
+[0.0, 160.0] [0.0, 25.0] [0.0, 3000.0] [0.0, 0.4] [0.0, 998.4]
+
+18
+
+30
+
+[0.0, 2000.0]
+
+3
+
+12
+
+[0.0, 35.0]
+
+5
+
+21
+
+[0.0, 50.0]
+
+7
+
+27
+
+[0.0, 31.0]
+
+78
+
+113
+
+[0.0, 423.8]
+
+54
+
+75
+
+[0.0, 747.2]
+
+74
+
+110
+
+[0.0, 268.8]
+
+3
+
+2
+
+[0.0, 36.4]
+
+19
+
+34
+
+[0.0, 8.0]
+
+50
+
+65
+
+[0.0, 759.8]
+
+2
+
+4
+
+[0.0, 25.0]
+
+26
+
+32
+
+[0.0, 519.0]
+
+7
+
+97
+
+[0.0, 1939.6]
+
+14
+
+29
+
+[0.0, 55.0]
+
+6
+
+23
+
+[0.0, 1448.6]
+
+6
+
+23
+
+[0.0, 1750.0]
+
+6
+
+20
+
+[0.0, 88.0]
+
+9
+
+22
+
+[0.0, 90.0]
+
+9
+
+12
+
+[0.0, 582.0]
+
+12
+
+14
+
+[0.0, 10.4]
+
+9
+
+15
+
+[0.0, 1455.2]
+
+9
+
+15
+
+[0.0, 1497.6]
+
+8
+
+9
+
+[0.0, 20.0]
+
+4
+
+4
+
+[0.0, 1749.4]
+
+14
+
+22
+
+[0.0, 5000.0]
+
+12
+
+14
+
+[0.0, 23.8]
+
+8
+
+10
+
+[0.0, 29.4]
+
+7
+
+10
+
+[0.0, 50.0]
+
+32
+
+105
+
+[0.0, 150.0]
+
+3
+
+24
+
+[0.0, 4000.0]
+
+6
+
+29
+
+[0.0, 250.0]
+
+7
+
+113
+
+[0.0, 50000.0]
+
+5
+
+50
+
+[0.0, 30000.0]
+
+5
+
+61
+
+[0.0, 31000.0]
+
+11
+
+151
+
+[0.0, 5000.0]
+
+4
+
+32
+
+[0.0, 5500.0]
+
+6
+
+49
+
+[0.0, 40.0]
+
+12
+
+57
+
+[0.0, 944.2]
+
+6
+
+13
+
+[0.0, 250.0]
+
+2
+
+11
+
+[0.0, 10.2]
+
+2
+
+14
+
+[0.0, 30.0]
+
+2
+
+20
+
+[0.0, 2.0]
+
+2
+
+15
+
+[0.0, 1176.8]
+
+2
+
+17
+
+[0.0, 24.6]
+
+5
+
+16
+
+[0.0, 1226.4]
+
+19
+
+19
+
+[0.0, 800.0]
+
+Continued on next page
+
+35
+
+A Regime-Aware Trajectory Prediction Framework for 1000+ Systems Biology Models
+
+Model ID
+
+Reference
+
+BIOMD0000000390 Arnold2011 BIOMD0000000391 Arnold2011 BIOMD0000000392 Arnold2011
+
+BIOMD0000000393 BIOMD0000000394 BIOMD0000000395 BIOMD0000000396 BIOMD0000000397 BIOMD0000000398 BIOMD0000000399 BIOMD0000000400 BIOMD0000000401 BIOMD0000000402 BIOMD0000000405 BIOMD0000000406 BIOMD0000000407
+
+Arnold2011 Sivakumar2011 Sivakumar2011 Sivakumar2011 Sivakumar2011 Sivakumar2011 Jenkinson2011 Cooling2007 Ayati2010 Ayati2010 Cookson2011 Moriya2011 Schliemann2011
+
+BIOMD0000000409 Queralt2006 BIOMD0000000410 Wegner2012
+
+BIOMD0000000411 BIOMD0000000412 BIOMD0000000413 BIOMD0000000414 BIOMD0000000416
+
+Heiland2012 Pokhilko2012 Band2012 Band2012 Muraro2011
+
+BIOMD0000000417 BIOMD0000000418 BIOMD0000000419 BIOMD0000000420 BIOMD0000000421 BIOMD0000000422 BIOMD0000000423
+
+Ratushny2012 Ratushny2012 Ratushny2012 Ratushny2012 Ratushny2012 Middleton2012 Nyman2012
+
+BIOMD0000000424 Faratian2009 BIOMD0000000425 Tan2012 BIOMD0000000426 Mosca2012
+
+BIOMD0000000427 BIOMD0000000428 BIOMD0000000429 BIOMD0000000430 BIOMD0000000431 BIOMD0000000432 BIOMD0000000433 BIOMD0000000434 BIOMD0000000435 BIOMD0000000436 BIOMD0000000439 BIOMD0000000440 BIOMD0000000441 BIOMD0000000442
+
+Bianconi2012 Achcar2012 Schaber2012 Sarma2012 Sarma2012 Sarma2012 Sarma2012 McAuley2012 deBack2012 Gupta2009 Smith2009 Sarma2012 Sarma2012 Sarma2012B
+
+Domain
+Taxonomy-Viridiplantae Taxonomy-Viridiplantae Taxonomy-Viridiplantae|TaxonomyMammalia Taxonomy-Viridiplantae Taxonomy-Mammalia Taxonomy-Mammalia Taxonomy-Mammalia Taxonomy-Mammalia Taxonomy-Mammalia Taxonomy-Homo sapiens Taxonomy-Mus musculus Taxonomy-Chordata Taxonomy-Chordata Taxonomy-cellular organisms Taxonomy-Schizosaccharomyces pombe Taxonomy-Homo sapiens|Brenda Tissue Ontology-rhabdomyosarcoma cell line Taxonomy-Saccharomyces cerevisiae Taxonomy-Mus musculus|Brenda Tissue Ontology-hepatocyte Taxonomy-Chlamydomonas reinhardtii Taxonomy-Arabidopsis thaliana Taxonomy-Arabidopsis Taxonomy-Arabidopsis Taxonomy-Arabidopsis thaliana|Gene Ontology-auxin-activated signaling pathway|Gene Ontology-regulation of cytokinin-activated signaling pathway Taxonomy-Saccharomyces cerevisiae Taxonomy-Saccharomyces cerevisiae Taxonomy-Saccharomyces cerevisiae Taxonomy-Saccharomyces cerevisiae Taxonomy-Saccharomyces cerevisiae Taxonomy-Arabidopsis Taxonomy-Murinae|Brenda Tissue Ontology-adipocyte Taxonomy-Homo sapiens Taxonomy-Escherichia coli Taxonomy-Homo sapiens|Brenda Tissue Ontology-HeLa cell Taxonomy-Homo sapiens Taxonomy-Trypanosoma brucei Taxonomy-Saccharomyces cerevisiae Taxonomy-cellular organisms Taxonomy-cellular organisms Taxonomy-cellular organisms Taxonomy-cellular organisms Taxonomy-Homo sapiens Taxonomy-Murinae Taxonomy-Mammalia Taxonomy-Schizosaccharomyces pombe Taxonomy-cellular organisms Taxonomy-cellular organisms Taxonomy-cellular organisms
+
+36
+
+Sys. Dim.
+7 16 23
+
+Par. Dim.
+19 75 135
+
+Time Span
+[0.0, 34.4] [0.0, 0.3] [0.0, 31.2]
+
+28
+
+181
+
+[0.0, 350.0]
+
+23
+
+38
+
+[0.0, 16.0]
+
+23
+
+25
+
+[0.0, 81.6]
+
+36
+
+56
+
+[0.0, 1668.6]
+
+50
+
+56
+
+[0.0, 208.0]
+
+27
+
+37
+
+[0.0, 6.8]
+
+93
+
+90
+
+[0.0, 437.2]
+
+13
+
+55
+
+[0.0, 10000.0]
+
+3
+
+15
+
+[0.0, 153.2]
+
+4
+
+21
+
+[0.0, 5000.0]
+
+6
+
+5
+
+[0.0, 47.2]
+
+24
+
+118
+
+[0.0, 190.0]
+
+47
+
+106
+
+[0.0, 6000.0]
+
+13
+
+54
+
+[0.0, 521.6]
+
+53
+
+151
+
+[0.0, 300.0]
+
+7
+
+35
+
+[0.0, 4.8]
+
+79
+
+120
+
+[0.0, 60.0]
+
+5
+
+10
+
+[0.0, 175.0]
+
+1
+
+4
+
+[0.0, 200.0]
+
+32
+
+50
+
+[0.0, 250.0]
+
+1
+
+12
+
+[0.0, 67.6]
+
+1
+
+11
+
+[0.0, 134.8]
+
+3
+
+13
+
+[0.0, 134.8]
+
+2
+
+13
+
+[0.0, 90.0]
+
+2
+
+13
+
+[0.0, 90.0]
+
+22
+
+47
+
+[0.0, 141.0]
+
+9
+
+19
+
+[0.0, 26.0]
+
+55
+
+114
+
+[0.0, 1537.6]
+
+1
+
+6
+
+[0.0, 21.2]
+
+21
+
+186
+
+[0.0, 0.0005]
+
+21
+
+54
+
+[0.0, 1500.0]
+
+26
+
+84
+
+[0.0, 12.2]
+
+15
+
+88
+
+[0.0, 5000.0]
+
+27
+
+45
+
+[0.0, 1380.4]
+
+27
+
+45
+
+[0.0, 1275.2]
+
+11
+
+26
+
+[0.0, 916.0]
+
+11
+
+26
+
+[0.0, 535.2]
+
+26
+
+43
+
+[0.0, 500.0]
+
+4
+
+18
+
+[0.0, 22.8]
+
+12
+
+77
+
+[0.0, 300.0]
+
+20
+
+19
+
+[0.0, 50.0]
+
+11
+
+25
+
+[0.0, 2200.0]
+
+11
+
+24
+
+[0.0, 800.0]
+
+13
+
+30
+
+[0.0, 850.0]
+
+Continued on next page
+
+A Regime-Aware Trajectory Prediction Framework for 1000+ Systems Biology Models
+
+Model ID
+
+Reference
+
+BIOMD0000000443 BIOMD0000000444 BIOMD0000000445 BIOMD0000000446 BIOMD0000000447
+BIOMD0000000448 BIOMD0000000449 BIOMD0000000452 BIOMD0000000453 BIOMD0000000458 BIOMD0000000459 BIOMD0000000460 BIOMD0000000461 BIOMD0000000462 BIOMD0000000463
+
+Sarma2012 Sarma2012 Pokhilko2013 Erguler2013 Venkatraman 2012 nnmark2013 nnmark2013 Bidkhori2012 Bidkhori2012 Smallbone2013 Liebal2012 Liebal2012 Liebal2012 Proctor2012 Heldt2012
+
+BIOMD0000000464 Koo2013
+
+BIOMD0000000465 BIOMD0000000466 BIOMD0000000467 BIOMD0000000468 BIOMD0000000475 BIOMD0000000476 BIOMD0000000477
+
+Koo2013 Koo2013 Koo2013 Koo2013 Amara2013 Adams2012 Mol2013
+
+BIOMD0000000478 Besozzi2012
+
+BIOMD0000000479 BIOMD0000000481 BIOMD0000000482 BIOMD0000000484 BIOMD0000000485 BIOMD0000000488
+
+Croft2013 tzel2012 Noguchi2013 Cao2013 Cao2013 Proctor2013
+
+BIOMD0000000489 BIOMD0000000490 BIOMD0000000491 BIOMD0000000492 BIOMD0000000493 BIOMD0000000502 BIOMD0000000503
+
+Sharp2013 Demin2013 Pathak2013 Pathak2013 Schittler2010 Messiha2013 Messiha2013
+
+BIOMD0000000504 BIOMD0000000505 BIOMD0000000506 BIOMD0000000507 BIOMD0000000508 BIOMD0000000509
+
+Proctor2013 vanEunen2013 vanEunen2013 Gardner2000 Barrack2014 Barrack2014
+
+Domain
+Taxonomy-cellular organisms Taxonomy-cellular organisms Taxonomy-Arabidopsis thaliana Taxonomy-cellular organisms Taxonomy-Rattus rattus
+
+Sys. Dim.
+19 18 32 27 13
+
+Par. Dim.
+47 47 143 94 23
+
+Time Span
+[0.0, 2800.0] [0.0, 5000.0] [0.0, 62.0] [0.0, 548.8] [0.0, 250.0]
+
+Taxonomy-Homo sapiens
+
+27
+
+Taxonomy-Homo sapiens
+
+27
+
+Taxonomy-cellular organisms
+
+109
+
+Taxonomy-cellular organisms
+
+109
+
+Taxonomy-Escherichia coli
+
+2
+
+Taxonomy-Bacillus subtilis
+
+3
+
+Taxonomy-Bacillus subtilis
+
+3
+
+Taxonomy-Bacillus subtilis
+
+3
+
+Taxonomy-Homo sapiens
+
+4
+
+Taxonomy-Influenza A virus|Taxonomy- 35 Mammalia
+
+Taxonomy-Homo sapiens|Gene Ontology- 14 calcium ion import|Reactome-eNOS synthesizes NO
+
+Taxonomy-Homo sapiens
+
+16
+
+Taxonomy-Homo sapiens
+
+34
+
+Taxonomy-Homo sapiens
+
+19
+
+Taxonomy-Homo sapiens
+
+79
+
+Taxonomy-Saccharomyces cerevisiae
+
+23
+
+Taxonomy-Arabidopsis thaliana
+
+16
+
+Taxonomy-Homo sapiens|Reactome-
+
+43
+
+Signaling by EGFR
+
+Taxonomy-Saccharomyces cerevisiae|
+
+30
+
+Gene Ontology-protein kinase A signaling|
+
+Gene Ontology-cAMP-mediated signaling|
+
+Pathway Ontology-protein kinase A (PKA)
+
+signaling pathway
+
+Taxonomy-Saccharomyces cerevisiae
+
+28
+
+Taxonomy-Bos taurus
+
+16
+
+Taxonomy-Rattus
+
+23
+
+Taxonomy-cellular organisms
+
+2
+
+Taxonomy-cellular organisms
+
+2
+
+Taxonomy-Mammalia|Pathway Ontology- 64 Alzheimer disease pathway
+
+Taxonomy-Mus musculus
+
+35
+
+Taxonomy-Homo sapiens
+
+33
+
+Taxonomy-Viridiplantae
+
+57
+
+Taxonomy-Viridiplantae
+
+52
+
+Taxonomy-cellular organisms
+
+3
+
+Taxonomy-Saccharomyces cerevisiae
+
+8
+
+Taxonomy-Saccharomyces cerevisiae|
+
+28
+
+Gene Ontology-glycolytic process|Gene
+
+Ontology-pentose-phosphate shunt
+
+Taxonomy-Homo sapiens
+
+73
+
+Taxonomy-Rattus
+
+45
+
+Taxonomy-Rattus
+
+45
+
+Taxonomy-Escherichia coli
+
+3
+
+Taxonomy-Mammalia
+
+16
+
+Taxonomy-Mammalia
+
+16
+
+68
+
+[0.0, 100.0]
+
+68
+
+[0.0, 38.0]
+
+187
+
+[0.0, 800.0]
+
+188
+
+[0.0, 26.4]
+
+10
+
+[0.0, 5.8]
+
+7
+
+[0.0, 1996.4]
+
+7
+
+[0.0, 300000.0]
+
+6
+
+[0.0, 157.6]
+
+9
+
+[0.0, 700.0]
+
+55
+
+[0.0, 75.0]
+
+28
+
+[0.0, 1985.0]
+
+23
+
+[0.0, 1744.2]
+
+60
+
+[0.0, 5000.0]
+
+18
+
+[0.0, 2000.0]
+
+135
+
+[0.0, 1956.8]
+
+26
+
+[0.0, 1985.6]
+
+83
+
+[0.0, 55.0]
+
+82
+
+[0.0, 30.0]
+
+39
+
+[0.0, 155.0]
+
+42
+
+[0.0, 100.0]
+
+69
+
+[0.0, 45.0]
+
+56
+
+[0.0, 100000.0]
+
+2
+
+[0.0, 276.8]
+
+8
+
+[0.0, 4.2]
+
+73
+
+[0.0, 907.4]
+
+87
+
+[0.0, 30000.0]
+
+263
+
+[0.0, 150.0]
+
+172
+
+[0.0, 56.0]
+
+176
+
+[0.0, 36.0]
+
+23
+
+[0.0, 850.0]
+
+52
+
+[0.0, 800.0]
+
+192
+
+[0.0, 256.2]
+
+131
+
+[0.0, 5000.0]
+
+224
+
+[0.0, 11.2]
+
+224
+
+[0.0, 70.0]
+
+11
+
+[0.0, 8.0]
+
+48
+
+[0.0, 52.5]
+
+48
+
+[0.0, 60.0]
+
+Continued on next page
+
+37
+
+A Regime-Aware Trajectory Prediction Framework for 1000+ Systems Biology Models
+
+Model ID
+
+Reference
+
+BIOMD0000000510 Kerkhoven2013
+
+BIOMD0000000511 Kerkhoven2013
+
+BIOMD0000000512 Benson2014 BIOMD0000000513 Kerkhoven2013 BIOMD0000000514 Kerkhoven2013
+
+BIOMD0000000515 Kerkhoven2013
+
+BIOMD0000000516 Kerkhoven2013
+
+BIOMD0000000517 BIOMD0000000521 BIOMD0000000522 BIOMD0000000523
+BIOMD0000000524
+BIOMD0000000525
+BIOMD0000000526
+BIOMD0000000528
+
+Smallbone2013 Ribba2012 Muraro2014 Kallenberger 2014 Kallenberger 2014 Kallenberger 2014 Kallenberger 2014 Fribourg2014
+
+BIOMD0000000529 Fribourg2014
+
+BIOMD0000000530 Schmitz2014 BIOMD0000000534 Dwivedi2014
+
+BIOMD0000000535 Dwivedi2014
+
+BIOMD0000000537 Dwivedi2014
+
+BIOMD0000000539 BIOMD0000000540 BIOMD0000000541 BIOMD0000000543
+
+ois2005 Yugi2014 Yugi2014 Qi2013
+
+BIOMD0000000544 Qi2013
+
+BIOMD0000000545 Ouyang2014 BIOMD0000000546 Miao2010
+BIOMD0000000547 Talemi2014 BIOMD0000000548 Sneppen2009 BIOMD0000000552 Ehrenstein2000
+
+Domain
+Taxonomy-Trypanosoma brucei|Gene Ontology-glycolytic process|Gene Ontology-pentose-phosphate shunt Taxonomy-Trypanosoma brucei|Gene Ontology-glycolytic process|Gene Ontology-pentose-phosphate shunt Taxonomy-Homo sapiens Taxonomy-Trypanosoma brucei Taxonomy-Trypanosoma brucei|Gene Ontology-glycolytic process|Gene Ontology-pentose-phosphate shunt Taxonomy-Trypanosoma brucei|Gene Ontology-glycolytic process|Gene Ontology-pentose-phosphate shunt Taxonomy-Trypanosoma brucei|Gene Ontology-glycolytic process|Gene Ontology-pentose-phosphate shunt Taxonomy-Murinae Taxonomy-Homo sapiens Taxonomy-Arabidopsis Taxonomy-Homo sapiens
+
+Sys. Dim. Par. Dim. Time Span
+
+38
+
+156
+
+[0.0, 13.0]
+
+37
+
+154
+
+[0.0, 39.2]
+
+39
+
+155
+
+[0.0, 1490.4]
+
+24
+
+90
+
+[0.0, 14.8]
+
+37
+
+150
+
+[0.0, 40.0]
+
+40
+
+181
+
+[0.0, 34.8]
+
+39
+
+179
+
+[0.0, 392.4]
+
+4
+
+20
+
+[0.0, 187.8]
+
+4
+
+10
+
+[0.0, 500.0]
+
+16
+
+69
+
+[0.0, 6.0]
+
+18
+
+12
+
+[0.0, 672.6]
+
+Taxonomy-Homo sapiens
+
+18
+
+12
+
+[0.0, 900.0]
+
+Taxonomy-Homo sapiens
+
+18
+
+15
+
+[0.0, 758.8]
+
+Taxonomy-Homo sapiens
+
+18
+
+15
+
+[0.0, 1200.0]
+
+Taxonomy-H1N1 swine influenza virus| 12
+
+Taxonomy-Homo sapiens
+
+Taxonomy-Influenza A virus (A/New
+
+12
+
+Caledonia/20/1999(H1N1))|Taxonomy-
+
+Homo sapiens
+
+Taxonomy-Homo sapiens
+
+10
+
+Taxonomy-Homo sapiens|Gene Ontology- 39
+
+JAK-STAT cascade
+
+Taxonomy-Homo sapiens|Gene Ontology- 39
+
+JAK-STAT cascade
+
+Taxonomy-Homo sapiens|Gene Ontology- 40
+
+JAK-STAT cascade
+
+Taxonomy-cellular organisms
+
+6
+
+Taxonomy-cellular organisms
+
+21
+
+Taxonomy-cellular organisms
+
+30
+
+Taxonomy-cellular organisms|Gene
+
+105
+
+Ontology-interferon-gamma-mediated
+
+signaling pathway|Gene Ontology-
+
+interleukin-6-mediated signaling pathway
+
+Taxonomy-cellular organisms|Gene
+
+102
+
+Ontology-interferon-gamma-mediated signaling pathway|Gene Ontology-
+
+interleukin-6-mediated signaling pathway
+
+Taxonomy-Arabidopsis thaliana
+
+14
+
+Taxonomy-Influenza A virus (strain A/X- 3 31 H3N2)|Taxonomy-Murinae
+
+Taxonomy-Saccharomyces cerevisiae
+
+11
+
+Taxonomy-Homo sapiens
+
+3
+
+Taxonomy-Homo sapiens
+
+2
+
+49
+
+[0.0, 300.0]
+
+49
+
+[0.0, 300.0]
+
+17
+
+[0.0, 5.4]
+
+51
+
+[0.0, 400.0]
+
+51
+
+[0.0, 0.4]
+
+53
+
+[0.0, 200.0]
+
+11
+
+[0.0, 400.0]
+
+22
+
+[0.0, 100.0]
+
+44
+
+[0.0, 3000.0]
+
+204
+
+[0.0, 8000.0]
+
+192
+
+[0.0, 8000.0]
+
+25
+
+[0.0, 20.4]
+
+5
+
+[0.0, 12.0]
+
+52
+
+[0.0, 200.0]
+
+4
+
+[0.0, 85.0]
+
+4
+
+[0.0, 451.2]
+
+Continued on next page
+
+38
+
+A Regime-Aware Trajectory Prediction Framework for 1000+ Systems Biology Models
+
+Model ID
+
+Reference
+
+BIOMD0000000553 BIOMD0000000557 BIOMD0000000558 BIOMD0000000559
+BIOMD0000000560 BIOMD0000000563
+
+Ehrenstein1997 Reiterer2013 Cloutier2012 Ouzounoglou 2014 Hui2016 Pritchard2014
+
+BIOMD0000000564 BIOMD0000000565 BIOMD0000000568 BIOMD0000000572 BIOMD0000000573 BIOMD0000000575 BIOMD0000000576 BIOMD0000000579 BIOMD0000000580
+
+Gould2013 Machado2014 Mueller2015 Costa2014 Aguilera2014 Sass2009 Kolodkin2013 Sengupta2015 Sonntag2012
+
+BIOMD0000000581 DallePezze2012
+
+BIOMD0000000582 BIOMD0000000584 BIOMD0000000586 BIOMD0000000587 BIOMD0000000590 BIOMD0000000591 BIOMD0000000596
+
+DallePezze2014 Mandlik2015 Karapetyan2016 Karapetyan2016 Hermansen2015 Boehm2014 Philipson2015
+
+BIOMD0000000597 BIOMD0000000598 BIOMD0000000599 BIOMD0000000600
+
+Flis2015 Flis2015 Coggins2014 re2011
+
+BIOMD0000000604
+BIOMD0000000605
+BIOMD0000000607
+BIOMD0000000611 BIOMD0000000612 BIOMD0000000613 BIOMD0000000614 BIOMD0000000615 BIOMD0000000616 BIOMD0000000617 BIOMD0000000620 BIOMD0000000621 BIOMD0000000622 BIOMD0000000623
+
+Elzbieta Petelenz Kurdziel2013 PetelenzKuehn osmoadaptation HOG1att PetelenzKuehn osmoadaptation fps1D1 Nayak2015 Proctor2016 Peterson2010 Kamihira2000 Kuznetsov2016 Dunster2014 Walsh2014 Palmer2014 Palmer2014 NguyenLK2011 Orton2009
+
+Domain
+Taxonomy-Homo sapiens Taxonomy-Homo sapiens Taxonomy-Homo sapiens Taxonomy-Homo sapiens
+Taxonomy-Mus musculus Taxonomy-Pseudomonas syringae| Taxonomy-Arabidopsis Taxonomy-Arabidopsis thaliana Taxonomy-Escherichia coli Taxonomy-Mus musculus Taxonomy-Lactococcus lactis Taxonomy-Homo sapiens Taxonomy-Homo sapiens Taxonomy-Homo sapiens Taxonomy-Homo sapiens Taxonomy-Mus musculus|TaxonomyHomo sapiens Taxonomy-Mus musculus|TaxonomyHomo sapiens Taxonomy-Homo sapiens Taxonomy-Leishmania Taxonomy-Saccharomyces cerevisiae Taxonomy-Saccharomyces cerevisiae Taxonomy-Mus musculus Helicobacter pylori, Mus musculus | biological process involved in symbiotic interaction; innate immune response; response to bacterium Taxonomy-Arabidopsis thaliana Taxonomy-Arabidopsis thaliana Taxonomy-Homo sapiens transforming growth factor beta receptor signaling pathway Taxonomy-Saccharomyces cerevisiae
+Taxonomy-Saccharomyces cerevisiae
+Taxonomy-Saccharomyces cerevisiae
+Taxonomy-Homo sapiens Taxonomy-Homo sapiens Taxonomy-Homo sapiens Taxonomy-Homo sapiens Taxonomy-Homo sapiens Taxonomy-Homo sapiens Taxonomy-Homo sapiens Taxonomy-Homo sapiens Taxonomy-Homo sapiens Taxonomy-cellular organisms Taxonomy-Rattus norvegicus
+
+Sys. Dim.
+2 25 2 89
+
+Par. Dim.
+4 50 8 23
+
+Time Span
+[0.0, 451.2] [0.0, 300.0] [0.0, 198.6] [0.0, 5000.0]
+
+62
+
+113
+
+[0.0, 1231.0]
+
+10
+
+19
+
+[0.0, 102.4]
+
+19
+
+115
+
+[0.0, 55.0]
+
+26
+
+150
+
+[0.0, 1844.6]
+
+24
+
+79
+
+[0.0, 427.8]
+
+26
+
+112
+
+[0.0, 1430.6]
+
+2
+
+8
+
+[0.0, 1750.0]
+
+49
+
+245
+
+[0.0, 1000.0]
+
+34
+
+61
+
+[0.0, 1185.2]
+
+240
+
+272
+
+[0.0, 500.0]
+
+26
+
+37
+
+[0.0, 1636.2]
+
+25
+
+32
+
+[0.0, 631.6]
+
+23
+
+55
+
+[0.0, 64.0]
+
+21
+
+34
+
+[0.0, 500.0]
+
+10
+
+25
+
+[0.0, 800.0]
+
+10
+
+25
+
+[0.0, 400.0]
+
+9
+
+30
+
+[0.0, 12.0]
+
+8
+
+7
+
+[0.0, 700.0]
+
+15
+
+56
+
+[0.0, 3000.0]
+
+28
+
+121
+
+[0.0, 60.0]
+
+28
+
+121
+
+[0.0, 62.0]
+
+30
+
+40
+
+[0.0, 1984.0]
+
+17
+
+20
+
+[0.0, 60000.0]
+
+29
+
+127
+
+[0.0, 5500.0]
+
+29
+
+127
+
+[0.0, 4000.0]
+
+29
+
+127
+
+[0.0, 80000.0]
+
+66
+
+106
+
+[0.0, 3000.0]
+
+35
+
+72
+
+[0.0, 200000.0]
+
+31
+
+268
+
+[0.0, 2000.0]
+
+1
+
+3
+
+[0.0, 8000.0]
+
+4
+
+12
+
+[0.0, 8000.0]
+
+4
+
+8
+
+[0.0, 300.0]
+
+1
+
+26
+
+[0.0, 500.0]
+
+34
+
+52
+
+[0.0, 50000.0]
+
+34
+
+52
+
+[0.0, 50000.0]
+
+10
+
+24
+
+[0.0, 1910.0]
+
+25
+
+54
+
+[0.0, 197.6]
+
+Continued on next page
+
+39
+
+A Regime-Aware Trajectory Prediction Framework for 1000+ Systems Biology Models
+
+Model ID
+
+Reference
+
+BIOMD0000000624 Sluka2016 BIOMD0000000625 Leber2016
+
+BIOMD0000000626 BIOMD0000000630
+BIOMD0000000631 BIOMD0000000640 BIOMD0000000642 BIOMD0000000646 BIOMD0000000647 BIOMD0000000648
+
+Ray2013 Venkatraman 2011 DeCaluwe2016 DallePezze2016 Mufudza2012 Barr2016 Kwang2003 Padala2017
+
+BIOMD0000000650 Owen1998 BIOMD0000000651 Nguyen2016
+BIOMD0000000652 Padala2017
+
+BIOMD0000000653 Padala2017
+
+BIOMD0000000654 Padala2017
+
+BIOMD0000000655 Padala2017
+
+BIOMD0000000656 Padala2017
+
+BIOMD0000000657 Araujo2016
+BIOMD0000000660 Barr2017 BIOMD0000000662 Moore2004 BIOMD0000000663 Wodarz2007
+BIOMD0000000664 Muller2008
+
+Domain
+Taxonomy-Homo sapiens Taxonomy-Mus musculus|TaxonomyHelicobacter pylori Taxonomy-Saccharomyces cerevisiae Taxonomy-cellular organisms
+
+Sys. Dim.
+6 17
+
+Par. Dim.
+9 50
+
+Time Span
+[0.0, 3000.0] [0.0, 550.0]
+
+6
+
+20
+
+[0.0, 55.2]
+
+4
+
+12
+
+[0.0, 450.4]
+
+Taxonomy-Arabidopsis thaliana
+
+12
+
+Taxonomy-Mammalia
+
+31
+
+Taxonomy-Homo sapiens
+
+3
+
+Taxonomy-Homo sapiens
+
+11
+
+KEGG Pathway-MAPK signaling pathway 11
+
+Taxonomy-Homo sapiens|Gene Ontology- 53 MAPK cascade|KEGG Pathway-MAPK signaling pathway|KEGG Pathway-PI3KAkt signaling pathway|KEGG PathwayWnt signaling pathway
+
+regulation of immune response to tumor 3 cell
+
+Taxonomy-Homo sapiens|Pathway
+
+29
+
+Ontology-the extracellular signal-regulated
+
+Raf/Mek/Erk signaling pathway|Pathway
+
+Ontology-mTOR signaling pathway
+
+Taxonomy-Homo sapiens|Gene Ontology- 53 MAPK cascade|KEGG Pathway-MAPK signaling pathway|KEGG Pathway-PI3KAkt signaling pathway|KEGG PathwayWnt signaling pathway
+
+Taxonomy-Homo sapiens|Gene Ontology- 53 MAPK cascade|KEGG Pathway-MAPK signaling pathway|KEGG Pathway-PI3KAkt signaling pathway|KEGG PathwayWnt signaling pathway
+
+Taxonomy-Homo sapiens|Gene Ontology- 53 MAPK cascade|KEGG Pathway-MAPK signaling pathway|KEGG Pathway-PI3KAkt signaling pathway|KEGG PathwayWnt signaling pathway
+
+Taxonomy-Homo sapiens|Gene Ontology- 53 MAPK cascade|KEGG Pathway-MAPK signaling pathway|KEGG Pathway-PI3KAkt signaling pathway|KEGG PathwayWnt signaling pathway
+
+Taxonomy-Homo sapiens|Gene Ontology- 53 MAPK cascade|KEGG Pathway-MAPK signaling pathway|KEGG Pathway-PI3KAkt signaling pathway|KEGG PathwayWnt signaling pathway
+
+Taxonomy-Homo sapiens|Pathway
+
+3
+
+Ontology-M phase pathway
+
+Taxonomy-Homo sapiens
+
+15
+
+Taxonomy-Homo sapiens
+
+3
+
+Taxonomy-Human immunodeficiency
+
+3
+
+virus 1|Taxonomy-Homo sapiens
+
+Taxonomy-Homo sapiens
+
+6
+
+47
+
+[0.0, 55.0]
+
+60
+
+[0.0, 54.8]
+
+18
+
+[0.0, 50.0]
+
+26
+
+[0.0, 5000.0]
+
+11
+
+[0.0, 68.8]
+
+103
+
+[0.0, 882.4]
+
+13
+
+[0.0, 546.8]
+
+34
+
+[0.0, 1600.0]
+
+102
+
+[0.0, 1600.0]
+
+99
+
+[0.0, 1196.0]
+
+101
+
+[0.0, 50000.0]
+
+101
+
+[0.0, 600.0]
+
+101
+
+[0.0, 1868.4]
+
+21
+
+[0.0, 3000.0]
+
+31
+
+[0.0, 1904.4]
+
+12
+
+[0.0, 60.0]
+
+7
+
+[0.0, 19.2]
+
+20
+
+[0.0, 80.0]
+
+Continued on next page
+
+40
+
+A Regime-Aware Trajectory Prediction Framework for 1000+ Systems Biology Models
+
+Model ID
+
+Reference
+
+BIOMD0000000666 Pappalardo2016
+
+BIOMD0000000667 Hornberg2005 BIOMD0000000668 Zhu2015
+
+BIOMD0000000670 Owen1998
+
+BIOMD0000000676 BIOMD0000000677 BIOMD0000000678 BIOMD0000000679 BIOMD0000000682 BIOMD0000000683 BIOMD0000000684 BIOMD0000000685
+
+Chen2006 Holmes2006 Tomida2003 Waugh2006 Wierschem2004 Wodarz1999 Wodarz2003 Wodarz2003
+
+BIOMD0000000686 Wodarz2007 BIOMD0000000687 Wodarz2007
+
+BIOMD0000000688 Wodarz2007
+
+BIOMD0000000691 Wolf2000 BIOMD0000000692 Phillips2003 BIOMD0000000695 FelixGarza2017
+BIOMD0000000696 Boada2016 BIOMD0000000697 Ciliberto2003 BIOMD0000000698 Reed2004 BIOMD0000000700 Heldt2018
+BIOMD0000000703 Diedrichs2018 BIOMD0000000704 Aguda1999
+
+Domain
+Experimental Factor Ontology-response to dabrafenib|Reactome-PI3K/AKT Signaling in Cancer|Reactome-MAPK family signaling cascades|KEGG PathwayMAPK signaling pathway|KEGG PathwayPI3K-Akt signaling pathway
+regulation of MAPK cascade KEGG Drug-Gemcitabine (USAN/INN)| KEGG Drug-Birinapant (USAN/INN)| Brenda Tissue Ontology-pancreas|NCItCombination Chemotherapy|KEGG DrugGemcitabine (USAN/INN)|KEGG DrugBirinapant (USAN/INN)|BioModels Database-MODEL1604270000
+regulation of immune response to tumor cell
+nitric oxide biosynthetic process
+muscle contraction
+Taxonomy-Homo sapiens
+Taxonomy-Homo sapiens
+Taxonomy-Homo sapiens
+Taxonomy-Homo sapiens
+Taxonomy-Homo sapiens Taxonomy-Homo sapiens|Brenda Tissue Ontology-cytotoxic T-lymphocyte|Cell Type Ontology-professional antigen presenting cell
+Taxonomy-Mus Taxonomy-Mus|Experimental Factor Ontology-cytomegalovirus infection| Brenda Tissue Ontology-cytotoxic Tlymphocyte Taxonomy-Mus|Experimental Factor Ontology-cytomegalovirus infection| Brenda Tissue Ontology-cytotoxic Tlymphocyte|Brenda Tissue Ontologynatural killer cell
+Taxonomy-Saccharomyces Taxonomy-Escherichia coli|KEGG Orthology-neurofibromin 1 Experimental Factor Ontology-psoriasis| Brenda Tissue Ontology-keratinocyte| Gene Ontology-response to blue light
+NCIt-Xenopus laevis|Gene Ontologyregulation of cell cycle
+Taxonomy-Homo sapiens Taxonomy-Homo sapiens|Gene OntologyDNA damage response, detection of DNA damage|Gene Ontology-regulation of cell cycle
+Reactome-unfolded protein [endoplasmic reticulum lumen] Taxonomy-Vertebrata|Gene Ontology-G2 DNA damage checkpoint
+
+Sys. Dim. 35
+103 10
+3 13 1 2 3 5 4 10 4
+5 15
+16
+13 8 12
+11 13 5 23
+11 16
+
+Par. Dim. Time Span
+
+87
+
+[0.0, 45.0]
+
+83
+
+[0.0, 15000.0]
+
+26
+
+[0.0, 400.0]
+
+8
+
+[0.0, 122.4]
+
+21
+
+[0.0, 2.0]
+
+10
+
+[0.0, 4.0]
+
+11
+
+[0.0, 60.0]
+
+11
+
+[0.0, 24.0]
+
+34
+
+[0.0, 600000.0]
+
+12
+
+[0.0, 45.0]
+
+28
+
+[0.0, 231.8]
+
+17
+
+[0.0, 55.0]
+
+16
+
+[0.0, 76.0]
+
+16
+
+[0.0, 60.0]
+
+20
+
+[0.0, 60.0]
+
+14
+
+[0.0, 4.0]
+
+12
+
+[0.0, 0.8]
+
+55
+
+[0.0, 2000.0]
+
+41
+
+[0.0, 700.0]
+
+25
+
+[0.0, 1000.0]
+
+23
+
+[0.0, 10.0]
+
+56
+
+[0.0, 1976.8]
+
+81
+
+[0.0, 3000.0]
+
+40
+
+[0.0, 70.0]
+
+Continued on next page
+
+41
+
+A Regime-Aware Trajectory Prediction Framework for 1000+ Systems Biology Models
+
+Model ID
+
+Reference
+
+BIOMD0000000705 Smith2010
+
+BIOMD0000000706 Smith2010
+BIOMD0000000707 Revilla2003
+BIOMD0000000708 Liu2017 BIOMD0000000709 Liu2017 BIOMD0000000710 Vargas2012
+BIOMD0000000713 Aston2018
+BIOMD0000000714 Reynolds2006 BIOMD0000000715 Huo2017 BIOMD0000000716 Lee2018
+BIOMD0000000717 Lee2018
+BIOMD0000000718 Li2008 BIOMD0000000719 Tsai2014
+BIOMD0000000720 Yan2012
+BIOMD0000000721 Graham2013 BIOMD0000000722 Bianchi2015
+BIOMD0000000724 Theinmozhi2018 BIOMD0000000725 Sora2016 BIOMD0000000726 Ruan2017
+
+BIOMD0000000727 BIOMD0000000728 BIOMD0000000729 BIOMD0000000730 BIOMD0000000731
+BIOMD0000000732
+
+Li2009 Norel1990 Goldbeter1996 Gerard2009 Robertson-Tessi M 2012 Kirschner1998
+
+BIOMD0000000733 BIOMD0000000736
+BIOMD0000000737
+BIOMD0000000738
+BIOMD0000000742
+
+Moore2004
+Mouse Iron Distribution Adequate iron diet No Tracer
+Mouse Iron Distribution Deficient iro diet No Tracer
+Mouse Iron Distribution Rich iron diet No Tracer
+Victor Garcia 2018
+
+Domain
+
+Sys. Dim.
+
+Taxonomy-Eukaryota|NCIt-Apoptosis|
+
+32
+
+Gene Ontology-metabolic process|Gene
+
+Ontology-post-translational protein
+
+modification|Gene Ontology-regulation of
+
+cell cycle
+
+Taxonomy-Eukaryota|Gene Ontology-post- 45 translational protein modification
+
+Taxonomy-Human immunodeficiency
+
+5
+
+virus 1|Taxonomy-Homo sapiens
+
+Taxonomy-Aves|Taxonomy-Homo sapiens 5
+
+Taxonomy-Aves|Taxonomy-Homo sapiens 5
+
+Taxonomy-Influenza A virus|Taxonomy- 7 Homo sapiens
+
+Taxonomy-Hepacivirus C|Taxonomy-
+
+3
+
+Homo sapiens
+
+Taxonomy-Homo sapiens
+
+4
+
+Taxonomy-Homo sapiens
+
+4
+
+Taxonomy-H5N6 subtype|Taxonomy-
+
+4
+
+Aves|Taxonomy-Homo sapiens
+
+Taxonomy-H5N6 subtype|Taxonomy-
+
+4
+
+Aves|Taxonomy-Homo sapiens
+
+Taxonomy-Caulobacter vibrioides
+
+16
+
+Taxonomy-Xenopus laevis|Gene Ontology- 5 regulation of cell cycle
+
+Taxonomy-Mammalia|Gene Ontology-cell 8 cycle
+
+Taxonomy-Homo sapiens
+
+5
+
+Taxonomy-Mus musculus|Taxonomy-
+
+5
+
+Rattus norvegicus
+
+Taxonomy-Homo sapiens
+
+28
+
+-
+
+38
+
+Taxonomy-Rabies lyssavirus|Taxonomy- 8 Homo sapiens|Taxonomy-Canis lupus familiaris
+
+Taxonomy-Caulobacter vibrioides
+
+30
+
+Taxonomy-Homo sapiens
+
+2
+
+Taxonomy-Eukaryota
+
+3
+
+Taxonomy-Mammalia
+
+45
+
+Taxonomy-Homo sapiens|NCIt-Tumor- 16 Infiltrating Immune Cell
+
+Taxonomy-Homo sapiens|NCIt-Tumor- 3 Infiltrating Immune Cell
+
+Taxonomy-Homo sapiens
+
+3
+
+Taxonomy-Mus musculus
+
+10
+
+Taxonomy-Mus musculus
+
+11
+
+Taxonomy-Mus musculus
+
+11
+
+Taxonomy-Homo sapiens
+
+2
+
+Par. Dim. Time Span
+
+19
+
+[0.0, 1982.8]
+
+128
+
+[0.0, 120.0]
+
+10
+
+[0.0, 200.0]
+
+12
+
+[0.0, 30000.0]
+
+12
+
+[0.0, 80000.0]
+
+17
+
+[0.0, 90.8]
+
+8
+
+[0.0, 500.0]
+
+25
+
+[0.0, 765.4]
+
+11
+
+[0.0, 15.0]
+
+20
+
+[0.0, 1500.0]
+
+20
+
+[0.0, 3000.0]
+
+50
+
+[0.0, 600.0]
+
+19
+
+[0.0, 150.0]
+
+29
+
+[0.0, 120.0]
+
+25
+
+[0.0, 55.0]
+
+33
+
+[0.0, 243.6]
+
+51
+
+[0.0, 10000.0]
+
+93
+
+[0.0, 1200.0]
+
+16
+
+[0.0, 971.2]
+
+96
+
+[0.0, 300.0]
+
+4
+
+[0.0, 7.0]
+
+15
+
+[0.0, 45.0]
+
+187
+
+[0.0, 75.0]
+
+48
+
+[0.0, 50000.0]
+
+14
+
+[0.0, 3500.0]
+
+12
+
+[0.0, 666.4]
+
+32
+
+[0.0, 973.6]
+
+32
+
+[0.0, 1412.0]
+
+32
+
+[0.0, 51.6]
+
+6
+
+[0.0, 48.8]
+
+Continued on next page
+
+42
+
+A Regime-Aware Trajectory Prediction Framework for 1000+ Systems Biology Models
+
+Model ID
+BIOMD0000000743 BIOMD0000000744 BIOMD0000000746 BIOMD0000000747 BIOMD0000000748 BIOMD0000000750 BIOMD0000000752 BIOMD0000000753 BIOMD0000000754 BIOMD0000000756 BIOMD0000000757 BIOMD0000000759 BIOMD0000000761
+BIOMD0000000762
+BIOMD0000000763
+BIOMD0000000765 BIOMD0000000766 BIOMD0000000767 BIOMD0000000768 BIOMD0000000769 BIOMD0000000770 BIOMD0000000771 BIOMD0000000773 BIOMD0000000774 BIOMD0000000775 BIOMD0000000776 BIOMD0000000777 BIOMD0000000778 BIOMD0000000779 BIOMD0000000780 BIOMD0000000781 BIOMD0000000782 BIOMD0000000783 BIOMD0000000784 BIOMD0000000785
+BIOMD0000000786
+BIOMD0000000787
+BIOMD0000000788 BIOMD0000000789 BIOMD0000000790 BIOMD0000000791 BIOMD0000000792 BIOMD0000000793 BIOMD0000000794
+
+Reference
+Gallaher2018 Hu2019 Saad2017 Nagashima2002 Phan2017 Lolas2016 Wilkie2013r Figueredo2013 Figueredo2013 Figueredo2013 Abernathy2016 Breems2015 Cappuccio2006
+Kuznetsov1994
+Dritschel2018
+Mager2005 Macnamara2015 Macnamara2015 Eftimie2010 Eftimie2017 Eftimie2017 Bajzer2008 Wodarz2018 Wodarz2018 Iarosz2015 Monro2008 Chakrabarty2010 Wei2017 dePillis2009 Wang2016 Wang2016 Wang2016 Dong2014 Lopez2014 Costa2003
+Lipniacki2004
+Frascoli2014
+Schropp2019 Jenner2018 Alvarez2019 Wilson2012 Hu2019 Chen2011 Benary2019
+
+Domain
+Taxonomy-Homo sapiens Taxonomy-Homo sapiens Taxonomy-Homo sapiens Homo sapiens | blood coagulation Taxonomy-Homo sapiens Taxonomy-Homo sapiens Taxonomy-Homo sapiens Taxonomy-Homo sapiens Taxonomy-Homo sapiens Taxonomy-Homo sapiens Taxonomy-Homo sapiens Taxonomy-Homo sapiens Taxonomy-Mus musculus|Gene OntologyT cell mediated cytotoxicity directed against tumor cell target|Gene Ontologynatural killer cell mediated cytotoxicity directed against tumor cell target T cell mediated immune response to tumor cell T cell mediated immune response to tumor cell Taxonomy-Unknown Taxonomy-Homo sapiens Taxonomy-Homo sapiens Taxonomy-Homo sapiens Taxonomy-Homo sapiens Taxonomy-Homo sapiens Taxonomy-Homo sapiens Taxonomy-Homo sapiens Taxonomy-Homo sapiens Taxonomy-Homo sapiens Taxonomy-Homo sapiens Taxonomy-Homo sapiens Taxonomy-Homo sapiens Taxonomy-Homo sapiens Taxonomy-Mus musculus T cell mediated immune response to tumor cell Mus musculus | response to tumor necrosis factor response to tumor cell; T cell mediated cytotoxicity; T cell mediated cytotoxicity directed against tumor cell target Taxonomy-Homo sapiens Taxonomy-Homo sapiens immune response to tumor cell Taxonomy-Homo sapiens immune response to tumor cell Taxonomy-Homo sapiens Mus musculus | response to tumor necrosis factor
+
+Sys. Dim.
+4 5 4 33 4 8 3 2 3 4 7 6 6
+2
+3
+4 5 3 5 5 4 3 3 2 4 2 3 3 6 4 3 2 3 3 2
+15
+2
+8 3 4 5 6 2 16
+
+Par. Dim.
+31 23 12 44 8 41 9 8 13 20 32 24 22
+
+Time Span
+[0.0, 349.8] [0.0, 630.4] [0.0, 50.0] [0.0, 10000.0] [0.0, 200.0] [0.0, 3.6] [0.0, 500.0] [0.0, 9.8] [0.0, 1000.0] [0.0, 3000.0] [0.0, 300.0] [0.0, 64.4] [0.0, 434.8]
+
+8
+
+[0.0, 1000.0]
+
+8
+
+[0.0, 50.0]
+
+13
+
+[0.0, 80.0]
+
+15
+
+[0.0, 80.0]
+
+8
+
+[0.0, 13.6]
+
+23
+
+[0.0, 10.4]
+
+27
+
+[0.0, 53.6]
+
+16
+
+[0.0, 50.0]
+
+8
+
+[0.0, 38.0]
+
+21
+
+[0.0, 4000.0]
+
+13
+
+[0.0, 5000.0]
+
+15
+
+[0.0, 621.6]
+
+7
+
+[0.0, 1660.8]
+
+9
+
+[0.0, 244.0]
+
+14
+
+[0.0, 35000.0]
+
+44
+
+[0.0, 26.2]
+
+15
+
+[0.0, 1658.4]
+
+10
+
+[0.0, 400.0]
+
+6
+
+[0.0, 187.2]
+
+8
+
+[0.0, 500.0]
+
+16
+
+[0.0, 36.8]
+
+3
+
+[0.0, 100.0]
+
+35
+
+[0.0, 40000.0]
+
+6
+
+[0.0, 285.6]
+
+21
+
+[0.0, 97.2]
+
+8
+
+[0.0, 150.0]
+
+18
+
+[0.0, 783.4]
+
+13
+
+[0.0, 347.6]
+
+28
+
+[0.0, 500.0]
+
+4
+
+[0.0, 66.0]
+
+33
+
+[0.0, 8500.0]
+
+Continued on next page
+
+43
+
+A Regime-Aware Trajectory Prediction Framework for 1000+ Systems Biology Models
+
+Model ID
+
+Reference
+
+BIOMD0000000795 BIOMD0000000796 BIOMD0000000797 BIOMD0000000798 BIOMD0000000799 BIOMD0000000800 BIOMD0000000801 BIOMD0000000802 BIOMD0000000803 BIOMD0000000804 BIOMD0000000805 BIOMD0000000806
+
+Chen2011 Yang2012 Hu2018 Sharp2019 Cucuianu2010 Precup2012 Sturrock2015 Hoffman2018 Park2019 Koenders2015 Husari2013 Eftimie2019
+
+BIOMD0000000808 Kronik2008 BIOMD0000000809 Malinzi2018
+
+BIOMD0000000810 BIOMD0000000811 BIOMD0000000812 BIOMD0000000813 BIOMD0000000814 BIOMD0000000815 BIOMD0000000818 BIOMD0000000819 BIOMD0000000821 BIOMD0000000823 BIOMD0000000824 BIOMD0000000825 BIOMD0000000826
+BIOMD0000000828 BIOMD0000000829 BIOMD0000000830
+BIOMD0000000831
+
+Ganguli2018 He2017 Galante2012 Anderson2015 V´ictor2019 Chrobak2011 Lee2008 Nazari2018 Yazdjer2019 Varusai2018 Lewkiewics2019 Greene2019 Sung Young Shin2018 Jung2019 Jung2019 GiantsosAdams 2013 Smith1980
+
+BIOMD0000000832 Shin2016 BIOMD0000000833 DiCamillo2016
+
+BIOMD0000000835 BIOMD0000000837 BIOMD0000000838 BIOMD0000000839 BIOMD0000000840
+
+Rao2014 Hanson2016 Tsur2019 Almeida2019 Caldwell2019
+
+Domain
+Taxonomy-Homo sapiens Taxonomy-Homo sapiens immune response to tumor cell Taxonomy-Homo sapiens Taxonomy-Homo sapiens Taxonomy-Homo sapiens T cell homeostasis Taxonomy-Homo sapiens Taxonomy-Homo sapiens Taxonomy-Mus musculus|TaxonomyVesicular stomatitis virus regulation of immune response to tumor cell; dormancy process Human Disease Ontology-breast cancer Homo sapiens | programmed cell death Homo sapiens Taxonomy-Mus musculus Taxonomy-Mammalia angiogenesis Taxonomy-Homo sapiens Taxonomy-Thymus Taxonomy-Homo sapiens
+
+Sys. Dim.
+2 5 4 5 2 3 4 4 9 3 4 6
+
+Par. Dim.
+6 27 19 14 6 10 17 11 10 20 14 32
+
+Time Span
+[0.0, 1083.0] [0.0, 800.0] [0.0, 50.0] [0.0, 46.4] [0.0, 100.0] [0.0, 1000.0] [0.0, 10000.0] [0.0, 5000.0] [0.0, 10.0] [0.0, 180.0] [0.0, 6.6] [0.0, 476.6]
+
+6
+
+40
+
+[0.0, 3200.0]
+
+5
+
+13
+
+[0.0, 19.6]
+
+13
+
+70
+
+[0.0, 1000.0]
+
+6
+
+52
+
+[0.0, 1267.8]
+
+4
+
+16
+
+[0.0, 300.0]
+
+3
+
+12
+
+[0.0, 400.0]
+
+3
+
+14
+
+[0.0, 2000.0]
+
+2
+
+6
+
+[0.0, 280.4]
+
+10
+
+18
+
+[0.0, 12.0]
+
+10
+
+34
+
+[0.0, 500.0]
+
+3
+
+8
+
+[0.0, 72.0]
+
+16
+
+38
+
+[0.0, 800.0]
+
+1
+
+7
+
+[0.0, 200.0]
+
+2
+
+12
+
+[0.0, 80.0]
+
+13
+
+89
+
+[0.0, 1956.8]
+
+signaling signaling Homo sapiens
+
+5
+
+17
+
+[0.0, 10.0]
+
+11
+
+51
+
+[0.0, 200.8]
+
+6
+
+7
+
+[0.0, 1089.4]
+
+Taxonomy-Bos taurus||Taxonomy-Bos
+
+3
+
+taurus|Gene Ontology-gonadotropin
+
+secretion|Gene Ontology-luteinizing
+
+hormone secretion|Mathematical
+
+Modelling Ontology-Ordinary differential
+
+equation model|BioModels Database-
+
+MODEL7898438988
+
+Taxonomy-Homo sapiens
+
+20
+
+|Taxonomy-Homo sapiens|Gene Ontology- 61 insulin receptor signaling pathway|Bio Models Database-MODEL1604100005
+
+Taxonomy-Rattus norvegicus
+
+31
+
+-
+
+8
+
+-
+
+3
+
+circadian rhythm
+
+8
+
+-
+
+5
+
+9
+
+[0.0, 7.2]
+
+61
+
+[0.0, 100.0]
+
+222
+
+[0.0, 10000.0]
+
+202
+
+[0.0, 60.0]
+
+22
+
+[0.0, 50000.0]
+
+8
+
+[0.0, 155.2]
+
+29
+
+[0.0, 45.0]
+
+10
+
+[0.0, 268.0]
+
+Continued on next page
+
+44
+
+A Regime-Aware Trajectory Prediction Framework for 1000+ Systems Biology Models
+
+Model ID
+
+Reference
+
+BIOMD0000000842 Heitzler2012
+
+BIOMD0000000843 BIOMD0000000844 BIOMD0000000845 BIOMD0000000846 BIOMD0000000847 BIOMD0000000848
+BIOMD0000000849 BIOMD0000000850 BIOMD0000000851 BIOMD0000000852 BIOMD0000000853 BIOMD0000000854 BIOMD0000000855 BIOMD0000000857
+
+Dudziuk2019 Viertel2019 Gulbudak2019 Gulbudak2019 Adams2019 FatehiChenar 2018 M Berg2017 Jenner2019 Ho2019 Andersen2017 Smolen2018 Gray2016 Cooper2015 Larbat2016
+
+BIOMD0000000858 Larbat2016
+
+BIOMD0000000859 Larbat2016
+
+BIOMD0000000861 BIOMD0000000862 BIOMD0000000863 BIOMD0000000864 BIOMD0000000865 BIOMD0000000866 BIOMD0000000867 BIOMD0000000868 BIOMD0000000869 BIOMD0000000870 BIOMD0000000871
+BIOMD0000000872 BIOMD0000000873 BIOMD0000000874 BIOMD0000000875 BIOMD0000000876 BIOMD0000000877 BIOMD0000000878 BIOMD0000000879 BIOMD0000000880 BIOMD0000000881 BIOMD0000000882 BIOMD0000000883
+
+Bachmann2011 Proctor2017B Kosinsky2018 Proctor2017 Nikolaev2019 Simon2019 Coulibaly2019 Simon2019 Simon2019 Simon2019 NIK dependent p100 processing into p52 Verma2016 Soni2018 Perelson1993 Nelson2000 Aavani2019 Ontah2019 Lenbury2001 Rodrigues2019 Trisilowati2018 Kogan2013 Munz2009 Giani2019
+
+Domain
+Taxonomy-Homo sapiens||TaxonomyHomo sapiens|Brenda Tissue Ontologykidney|Gene Ontology-transmembrane receptor protein serine/threonine kinase signaling pathway|Gene Ontologyangiotensin-activated signaling pathway| BioModels Database-MODEL1012080000 immune response
+
+Sys. Dim. 20
+10 9 3 3 4 9
+
+Par. Dim. 35
+39 82 12 12 17 28
+
+Time Span [0.0, 339.6]
+[0.0, 409.6] [0.0, 1400.0] [0.0, 250.0] [0.0, 400.0] [0.0, 100.0] [0.0, 13.2]
+
+Bos taurus
+
+13
+
+72
+
+[0.0, 60.0]
+
+-
+
+3
+
+4
+
+[0.0, 659.2]
+
+-
+
+5
+
+17
+
+[0.0, 35.6]
+
+-
+
+6
+
+35
+
+[0.0, 20000.0]
+
+-
+
+9
+
+31
+
+[0.0, 4000.0]
+
+Taxonomy-Mus musculus
+
+4
+
+9
+
+[0.0, 14.4]
+
+Taxonomy-Homo sapiens
+
+4
+
+39
+
+[0.0, 20.0]
+
+sucrose metabolic process; phenol-
+
+9
+
+34
+
+[0.0, 170.0]
+
+containing compound metabolic process;
+
+starch metabolic process
+
+phenol-containing compound metabolic 8
+
+35
+
+[0.0, 50.0]
+
+process; sucrose metabolic process; starch
+
+metabolic process
+
+starch metabolic process; phenol-
+
+12
+
+46
+
+[0.0, 55.0]
+
+containing compound metabolic process;
+
+sucrose metabolic process
+
+Taxonomy-Mus musculus
+
+26
+
+32
+
+[0.0, 300.0]
+
+Homo sapiens
+
+8
+
+11
+
+[0.0, 40000.0]
+
+Taxonomy-Mus musculus
+
+6
+
+27
+
+[0.0, 40.2]
+
+Homo sapiens
+
+6
+
+9
+
+[0.0, 5000.0]
+
+Taxonomy-Mus musculus
+
+4
+
+58
+
+[0.0, 20.0]
+
+Homo sapiens
+
+3
+
+6
+
+[0.0, 3000.0]
+
+Taxonomy-Homo sapiens
+
+10
+
+57
+
+[0.0, 70.0]
+
+Homo sapiens
+
+4
+
+7
+
+[0.0, 1990.0]
+
+Homo sapiens
+
+4
+
+12
+
+[0.0, 1448.0]
+
+Homo sapiens
+
+6
+
+14
+
+[0.0, 1943.0]
+
+Homo sapiens
+
+8
+
+20
+
+[0.0, 500.0]
+
+Homo sapiens Leishmania Taxonomy-Homo sapiens Taxonomy-Homo sapiens Taxonomy-Homo sapiens Taxonomy-Homo sapiens Taxonomy-Homo sapiens Taxonomy-Homo sapiens Taxonomy-Homo sapiens Taxonomy-Homo sapiens Taxonomy-Homo sapiens
+
+7
+
+24
+
+[0.0, 1000.0]
+
+29
+
+57
+
+[0.0, 125.2]
+
+4
+
+10
+
+[0.0, 4500.0]
+
+4
+
+8
+
+[0.0, 30.0]
+
+4
+
+11
+
+[0.0, 70.0]
+
+4
+
+12
+
+[0.0, 70.0]
+
+3
+
+13
+
+[0.0, 420.0]
+
+3
+
+18
+
+[0.0, 1.5]
+
+4
+
+14
+
+[0.0, 183.0]
+
+4
+
+27
+
+[0.0, 3000.0]
+
+3
+
+5
+
+[0.0, 6.0]
+
+63
+
+134
+
+[0.0, 77.6]
+
+Continued on next page
+
+45
+
+A Regime-Aware Trajectory Prediction Framework for 1000+ Systems Biology Models
+
+Model ID
+
+Reference
+
+BIOMD0000000884 BIOMD0000000885 BIOMD0000000887 BIOMD0000000888 BIOMD0000000889 BIOMD0000000890
+BIOMD0000000891 BIOMD0000000892 BIOMD0000000893
+BIOMD0000000894 BIOMD0000000895 BIOMD0000000896 BIOMD0000000897 BIOMD0000000898 BIOMD0000000899
+
+Cortes2019 Sumana2018 Lim2014 Unni2019 Fribourg2014 Bhattacharya 2014 Khajanchi2019 Sandip2013 Gonzalez Miranda2013 Bose2011 Schokker2013 Szymanska2009 Khajanchi2015 Jiao2018 Ota2015
+
+BIOMD0000000903 BIOMD0000000905 BIOMD0000000906 BIOMD0000000907
+BIOMD0000000908 BIOMD0000000909 BIOMD0000000910 BIOMD0000000911 BIOMD0000000912 BIOMD0000000913 BIOMD0000000914 BIOMD0000000915 BIOMD0000000916 BIOMD0000000917 BIOMD0000000919
+
+perez2019 Dubey2007 Dubey2007 HeberleRazquin Navas2019 dePillis2013 dePillis2003 Isaeva2008 Merola2008 Caravagna2010 dePillis2008 Guillen2013 Sun2018 Kraan199 Phillips2007 Ledzewicz2013
+
+BIOMD0000000920 Jarrett2015 BIOMD0000000921 Khajanchi2017 BIOMD0000000922 Turner2015
+
+BIOMD0000000924 BIOMD0000000925 BIOMD0000000926 BIOMD0000000927 BIOMD0000000928 BIOMD0000000929 BIOMD0000000930 BIOMD0000000931 BIOMD0000000933 BIOMD0000000934
+
+Smith2011 Dunster2016 Rhodes2019 Grigolon2018 Baker2017 Li2016 Liu2017 Voliotis2019 Kosiuk2015 Linke2017
+
+BIOMD0000000935 Ferrel2011
+
+Domain
+Taxonomy-Homo sapiens Taxonomy-Homo sapiens Taxonomy-Homo sapiens Homo sapiens Taxonomy-Homo sapiens Taxonomy-Homo sapiens
+
+Sys. Dim.
+3 4 4 4 12 3
+
+Par. Dim.
+9 11 10 21 50 11
+
+Time Span
+[0.0, 50.0] [0.0, 600.0] [0.0, 549.2] [0.0, 80.0] [0.0, 150.0] [0.0, 5000.0]
+
+Taxonomy-Homo sapiens Taxonomy-Homo sapiens -
+
+3
+
+12
+
+[0.0, 430.8]
+
+4
+
+11
+
+[0.0, 27.4]
+
+3
+
+6
+
+[0.0, 9.0]
+
+Taxonomy-Homo sapiens
+
+3
+
+8
+
+[0.0, 143.6]
+
+Taxonomy-Gallus gallus
+
+9
+
+49
+
+[0.0, 120.4]
+
+Taxonomy-Homo sapiens
+
+9
+
+18
+
+[0.0, 1118.0]
+
+Taxonomy-Homo sapiens
+
+2
+
+10
+
+[0.0, 800.0]
+
+Taxonomy-Homo sapiens
+
+5
+
+22
+
+[0.0, 150.0]
+
+Homo sapiens | GDP-dissociation inhibitor 12
+
+15
+
+[0.0, 1000.0]
+
+binding
+
+Taxonomy-Homo sapiens
+
+5
+
+28
+
+[0.0, 53.6]
+
+Taxonomy-Homo sapiens
+
+5
+
+15
+
+[0.0, 72.0]
+
+Taxonomy-Homo sapiens
+
+3
+
+9
+
+[0.0, 29.2]
+
+Taxonomy-Homo sapiens
+
+25
+
+68
+
+[0.0, 214.4]
+
+Taxonomy-Homo sapiens
+
+7
+
+Taxonomy-Homo sapiens
+
+4
+
+Taxonomy-Homo sapiens
+
+3
+
+Taxonomy-Homo sapiens
+
+3
+
+Taxonomy-Homo sapiens
+
+3
+
+Taxonomy-Homo sapiens
+
+6
+
+Taxonomy-Mus musculus
+
+5
+
+Taxonomy-Homo sapiens
+
+9
+
+Taxonomy-Homo sapiens
+
+5
+
+Taxonomy-Homo sapiens
+
+3
+
+Taxonomy-Homo sapiens||Taxonomy-
+
+2
+
+Homo sapiens|Mathematical Modelling
+
+Ontology-Ordinary differential equation
+
+model
+
+Taxonomy-Mus musculus
+
+4
+
+Taxonomy-Homo sapiens
+
+5
+
+Taxonomy-Lutzia|Experimental Factor
+
+3
+
+Ontology-malaria
+
+Taxonomy-Homo sapiens
+
+6
+
+Homo sapiens | blood coagulation
+
+14
+
+Taxonomy-Homo sapiens
+
+8
+
+Taxonomy-unidentified plant
+
+3
+
+-
+
+4
+
+Taxonomy-Homo sapiens
+
+5
+
+Taxonomy-Homo sapiens
+
+4
+
+Taxonomy-Mus
+
+3
+
+Taxonomy-unclassified eukaryotes
+
+3
+
+NCIt-Saccharomyces cerevisiae|Gene
+
+13
+
+Ontology-regulation of cell cycle
+
+Taxonomy-Xenopus laevis|Gene Ontology- 2
+
+regulation of cell cycle
+
+43
+
+[0.0, 1500.0]
+
+17
+
+[0.0, 100.0]
+
+10
+
+[0.0, 250.0]
+
+9
+
+[0.0, 137.2]
+
+14
+
+[0.0, 500.0]
+
+37
+
+[0.0, 350.0]
+
+10
+
+[0.0, 85.0]
+
+30
+
+[0.0, 18000.0]
+
+5
+
+[0.0, 4.4]
+
+21
+
+[0.0, 48.0]
+
+9
+
+[0.0, 15.2]
+
+16
+
+[0.0, 594.0]
+
+24
+
+[0.0, 225.2]
+
+9
+
+[0.0, 22.8]
+
+28
+
+[0.0, 79.8]
+
+22
+
+[0.0, 6000.0]
+
+78
+
+[0.0, 600.0]
+
+9
+
+[0.0, 444.4]
+
+14
+
+[0.0, 18.0]
+
+39
+
+[0.0, 500.0]
+
+17
+
+[0.0, 800.0]
+
+22
+
+[0.0, 35.0]
+
+14
+
+[0.0, 27.0]
+
+23
+
+[0.0, 80.0]
+
+8
+
+[0.0, 10.6]
+
+Continued on next page
+
+46
+
+A Regime-Aware Trajectory Prediction Framework for 1000+ Systems Biology Models
+
+Model ID
+
+Reference
+
+BIOMD0000000936 ferrel2011
+
+BIOMD0000000937 Ferrel2011
+
+BIOMD0000000938 Gerard2013
+
+BIOMD0000000939 Iwamoto2010
+
+BIOMD0000000940 Tang2019 BIOMD0000000941 Gerard2010
+BIOMD0000000942 Sible2007
+BIOMD0000000943 Hat2016
+BIOMD0000000944 Goldbeter2013 BIOMD0000000947 Lee2017
+BIOMD0000000948 Landberg2009
+BIOMD0000000949 Chitnis2008
+BIOMD0000000952 Rodenfels2019
+BIOMD0000000953 Queralt2006
+BIOMD0000000954 Pandey2018 BIOMD0000000959 Kok2020
+BIOMD0000000965 LeBeau1999
+BIOMD0000000966 Cui2008 BIOMD0000000967 McLean1991
+BIOMD0000000968 Palmer2008 BIOMD0000000972 Tang2020
+
+BIOMD0000000973 Dasgupta2020 BIOMD0000000979 Malkov2020
+
+BIOMD0000000985 BIOMD0000000986 BIOMD0000000987 BIOMD0000001004 BIOMD0000001005
+
+Fabry1984 Aubry1995 Aubry1995 Intosalmi2015 Bae2017
+
+BIOMD0000001006 BIOMD0000001007 BIOMD0000001009 BIOMD0000001010 BIOMD0000001011 BIOMD0000001012 BIOMD0000001015
+
+Ciliberto2005 Zhang2007 Zhang2007 Zhang2007 Triana2020 Triana2020 Jarrah2014
+
+Domain
+Taxonomy-Xenopus laevis|Gene Ontologyregulation of cell cycle Taxonomy-Xenopus laevis|Gene Ontologyregulation of cell cycle Taxonomy-Mus musculus|Gene Ontologyregulation of cell cycle Taxonomy-Homo sapiens|Gene OntologyDNA damage response, detection of DNA damage Taxonomy-Homo sapiens Taxonomy-Mammalia|Gene Ontologyregulation of cell cycle Taxonomy-Xenopus laevis|Gene Ontologyregulation of cell cycle Taxonomy-Homo sapiens|Gene Ontologycell cycle OMIT-Amphibians Taxonomy-Homo sapiens|KEGG DrugAcetaminophen (JP18/USP) KEGG Compound-Resorcinol|ChEBI-5alkylresorcinol Taxonomy-Homo sapiens|Experimental Factor Ontology-malaria Taxonomy-Danio rerio|Gene Ontologyregulation of cell cycle Taxonomy-Saccharomyces cerevisiae (strain ATCC 204508 / S288c) Taxonomy-Homo sapiens Homo sapiens | regulation of type I interferon-mediated signaling pathway Homo sapiens | calcium-mediated signaling Taxonomy-Escherichia coli Taxonomy-Human immunodeficiency virus|Taxonomy-Homo sapiens Taxonomy-Homo sapiens Taxonomy-Severe acute respiratory syndrome coronavirus 2|Taxonomy-Homo sapiens Taxonomy-Homo sapiens Taxonomy-Severe acute respiratory syndrome coronavirus 2|Taxonomy-Homo sapiens receptor-mediated endocytosis Taxonomy-Dictyostelium discoideum AX2 Taxonomy-Dictyostelium discoideum AX2 Taxonomy-Mus sp. Taxonomy-Mus musculus|TaxonomyRattus norvegicus Taxonomy-Homo sapiens Taxonomy-Homo sapiens Taxonomy-Homo sapiens Taxonomy-Homo sapiens Taxonomy-Homo sapiens Taxonomy-Homo sapiens Taxonomy-Mus musculus
+
+Sys. Dim. 1
+3
+3
+54
+20 8
+7
+33
+3 9
+4
+7
+11
+13
+18 41
+5
+7 4
+10 8
+2 5
+7 6 9 10 41
+7 3 4 2 3 4 6
+
+Par. Dim. Time Span
+
+4
+
+[0.0, 7.6]
+
+12
+
+[0.0, 12.0]
+
+12
+
+[0.0, 60.0]
+
+138
+
+[0.0, 5500.0]
+
+42
+
+[0.0, 1368.4]
+
+22
+
+[0.0, 50.0]
+
+27
+
+[0.0, 200.0]
+
+101
+
+[0.0, 150000.0]
+
+15
+
+[0.0, 40.0]
+
+12
+
+[0.0, 188.8]
+
+6
+
+[0.0, 80.0]
+
+24
+
+[0.0, 12000.0]
+
+26
+
+[0.0, 70.0]
+
+46
+
+[0.0, 500.0]
+
+53
+
+[0.0, 1536.4]
+
+87
+
+[0.0, 50.0]
+
+17
+
+[0.0, 250.0]
+
+7
+
+[0.0, 5.0]
+
+10
+
+[0.0, 100.0]
+
+11
+
+[0.0, 100.0]
+
+22
+
+[0.0, 150.0]
+
+8
+
+[0.0, 100.0]
+
+6
+
+[0.0, 350.0]
+
+13
+
+[0.0, 80.0]
+
+12
+
+[0.0, 293.6]
+
+11
+
+[0.0, 152.8]
+
+18
+
+[0.0, 100.0]
+
+133
+
+[0.0, 100.0]
+
+27
+
+[0.0, 1250.0]
+
+32
+
+[0.0, 150.0]
+
+33
+
+[0.0, 28.8]
+
+26
+
+[0.0, 126.0]
+
+5
+
+[0.0, 550.0]
+
+10
+
+[0.0, 1000.0]
+
+20
+
+[0.0, 200.0]
+
+Continued on next page
+
+47
+
+A Regime-Aware Trajectory Prediction Framework for 1000+ Systems Biology Models
+
+Model ID
+
+Reference
+
+BIOMD0000001016 BIOMD0000001017 BIOMD0000001018 BIOMD0000001021 BIOMD0000001022 BIOMD0000001023 BIOMD0000001024 BIOMD0000001025
+
+Bakshi2020 Bakshi2020 Bakshi2020 Lavigne2021 Creemers2021 Alharbi2020 Chaudhury2020 Chaudhury2020
+
+BIOMD0000001026 Kurlovics2021
+
+BIOMD0000001027 BIOMD0000001028 BIOMD0000001029 BIOMD0000001030 BIOMD0000001031 BIOMD0000001032 BIOMD0000001033 BIOMD0000001034
+
+Zake2021 Zake2021 Zake2021 Sontag2017 Tuwairqi2020 Tuwairqi2020 Almuallem2020 Mendrazitsky 2007
+
+BIOMD0000001035 BIOMD0000001036 BIOMD0000001037 BIOMD0000001038 BIOMD0000001039 BIOMD0000001040
+
+Tuwairqi2020 Cappuccio2007 Alharbi2019 Alharbi2019 Zake2021 Kurlovics2021
+
+BIOMD0000001043 Wodarz2001 BIOMD0000001045 Moore2004
+
+BIOMD0000001047 BIOMD0000001048 BIOMD0000001052 BIOMD0000001053 BIOMD0000001054 BIOMD0000001056 BIOMD0000001057 BIOMD0000001058 BIOMD0000001059 BIOMD0000001060 BIOMD0000001072 BIOMD0000001077 BIOMD0000001102 MODEL0910896131 MODEL0975191032
+
+Collier1996 Siddhartha2002 Alharbi2020 Garde2020 Pearce2021 Chulian2021 Nikolov2020 Novak2022 Stucki2005 Frank2021 Phillips2013 Adlung2021 Burbano2023 Guyton1972 Chang2008
+
+Domain
+Taxonomy-Homo sapiens Taxonomy-Homo sapiens Taxonomy-Homo sapiens Taxonomy-Homo sapiens Taxonomy-Homo sapiens Taxonomy-Homo sapiens Taxonomy-Homo sapiens Taxonomy-Homo sapiens|Human Disease Ontology-leukemia Taxonomy-Homo sapiens||Brenda Tissue Ontology-erythrocyte|ChEBI-metformin| Gene Ontology-drug transport| Mathematical Modelling OntologyOrdinary differential equation model|Bio Models Database-MODEL2103170002 Taxonomy-Mus sp. Taxonomy-Homo sapiens Taxonomy-Homo sapiens Taxonomy-Vertebrata Taxonomy-Homo sapiens Taxonomy-Homo sapiens Taxonomy-Homo sapiens Taxonomy-Mycobacterium tuberculosis variant bovis BCG|Taxonomy-Homo sapiens Taxonomy-Homo sapiens Taxonomy-Homo sapiens Taxonomy-Homo sapiens Taxonomy-Homo sapiens Taxonomy-Mus sp. Taxonomy-Homo sapiens||Brenda Tissue Ontology-erythrocyte|ChEBI-metformin| Gene Ontology-drug transport| Mathematical Modelling OntologyOrdinary differential equation model|Bio Models Database-MODEL2103170001 Taxonomy-Homo sapiens Taxonomy-Influenza A virus (strain A/ Hong Kong/1/1968 H3N2)|TaxonomyHomo sapiens Taxonomy-Drosophila Taxonomy-Homo sapiens Taxonomy-Homo sapiens Taxonomy-Bacillus subtilis Taxonomy-Homo sapiens Taxonomy-Homo sapiens Taxonomy-Homo sapiens Taxonomy-Homo sapiens Taxonomy-Mus Taxonomy-Homo sapiens Taxonomy-Mammalia Taxonomy-Homo sapiens Taxonomy-Homo sapiens Taxonomy-Homo sapiens
+
+Sys. Dim. 8 13 18 6 4 3 2 3
+1
+20 21 21 2 3 4 6 4
+4 3 2 3 20 1
+3 3
+4 3 3 6 7 3 2 10 10 2 6 15 23 2 115
+
+Par. Dim.
+14 22 31 10 7 16 4 14
+
+Time Span
+[0.0, 100.0] [0.0, 20000.0] [0.0, 20000.0] [0.0, 8.8] [0.0, 80.0] [0.0, 38.8] [0.0, 240.0] [0.0, 1000.0]
+
+12
+
+[0.0, 200.0]
+
+97
+
+[0.0, 15.0]
+
+104
+
+[0.0, 150.0]
+
+104
+
+[0.0, 80.0]
+
+6
+
+[0.0, 200.0]
+
+4
+
+[0.0, 30.0]
+
+7
+
+[0.0, 49.6]
+
+31
+
+[0.0, 113.8]
+
+12
+
+[0.0, 50.0]
+
+11
+
+[0.0, 259.6]
+
+13
+
+[0.0, 1500.0]
+
+6
+
+[0.0, 10.0]
+
+10
+
+[0.0, 100.0]
+
+97
+
+[0.0, 6.0]
+
+11
+
+[0.0, 120.0]
+
+9
+
+[0.0, 1500.0]
+
+2
+
+[0.0, 130.0]
+
+14
+
+[0.0, 24.4]
+
+11
+
+[0.0, 1994.4]
+
+16
+
+[0.0, 30.0]
+
+6
+
+[0.0, 5.5]
+
+11
+
+[0.0, 200.0]
+
+9
+
+[0.0, 4000.0]
+
+7
+
+[0.0, 1298.0]
+
+48
+
+[0.0, 212.0]
+
+23
+
+[0.0, 1062.6]
+
+20
+
+[0.0, 24.4]
+
+53
+
+[0.0, 270000.0]
+
+29
+
+[0.0, 130.0]
+
+28
+
+[0.0, 62.0]
+
+8
+
+[0.0, 60000.0]
+
+219
+
+[0.0, 1000.0]
+
+Continued on next page
+
+48
+
+A Regime-Aware Trajectory Prediction Framework for 1000+ Systems Biology Models
+
+Model ID
+
+Reference
+
+MODEL1002160000 MODEL1004010000 MODEL1004010001 MODEL1004010002 MODEL1004070000 MODEL1004070001
+
+Cabrero2011 Kuwahara2010 Kuwahara2010 Kuwahara2010 Haut1974 Vaseghi1999
+
+MODEL1005050000 MODEL1005200000 MODEL1007200000 MODEL1008060000 MODEL1008060002 MODEL1009220000 MODEL1009230000 MODEL1011010000
+
+Salazar2009 Twycross2010 Nijhout2006 Munz2009 Munz2009 Martins2004 Munz2009 Bruck2008
+
+MODEL1101100000 MODEL1101170000 MODEL1102210000 MODEL1102210001 MODEL1103210001
+MODEL1108260010 MODEL1108260015 MODEL1109160000 MODEL1109160001 MODEL1112100000 MODEL1112110004 MODEL1112150000 MODEL1112260002 MODEL1202030000 MODEL1202030001 MODEL1202170000 MODEL1203220000 MODEL1204040000 MODEL1204060000 MODEL1204240000 MODEL1204280001 MODEL1204280002 MODEL1204280003 MODEL1204280004 MODEL1204280005 MODEL1204280006 MODEL1204280007 MODEL1204280008 MODEL1204280009 MODEL1204280010 MODEL1204280011 MODEL1204280012 MODEL1204280013 MODEL1204280014 MODEL1204280015 MODEL1204280016
+
+Bakker1997 Nakano2010 Wei2011 Telesco2011 Jamshidi01 RBC Metabolic Network Jesty1993 Qiao2004 Kogan2001 Kogan2001 nsson2005 Silber2007 Tiemann2011 Smith2010 Dupeux2011 Dupeux2011 Nazaret2008 Mol2013 Houser2012 Kubota2012 Sorokina2011 Sarma2012 Sarma2012 Sarma2012 Sarma2012 Sarma2012 Sarma2012 Sarma2012 Sarma2012 Sarma2012 Sarma2012 Sarma2012 Sarma2012 Sarma2012 Sarma2012 Sarma2012 Sarma2012
+
+Domain
+Taxonomy-Homo sapiens Taxonomy-Escherichia coli Taxonomy-Escherichia coli Taxonomy-Escherichia coli Rattus | pentose-phosphate shunt Saccharomyces cerevisiae | pentosephosphate shunt Taxonomy-Arabidopsis thaliana Taxonomy-Embryophyta Taxonomy-Homo sapiens Taxonomy-Homo sapiens Taxonomy-Homo sapiens Saccharomyces cerevisiae Taxonomy-Homo sapiens Saccharomyces cerevisiae | glycolytic process Taxonomy-Trypanosoma brucei Taxonomy-Homo sapiens Taxonomy-Homo sapiens Taxonomy-Homo sapiens Homo sapiens
+Taxonomy-Homo sapiens Taxonomy-Homo sapiens Taxonomy-Arabidopsis thaliana Taxonomy-Homo sapiens Taxonomy-Mus musculus Taxonomy-Homo sapiens Taxonomy-Arabidopsis thaliana Taxonomy-Arabidopsis thaliana Taxonomy-Eukaryota Taxonomy-Leishmania Taxonomy-Saccharomyces cerevisiae Taxonomy-Rattus Taxonomy-Ostreococcus tauri Taxonomy-Xenopus laevis Taxonomy-Mus musculus Taxonomy-Mus musculus Taxonomy-Mus musculus Taxonomy-Xenopus laevis Taxonomy-Mus musculus Taxonomy-Mus musculus Taxonomy-Mus musculus Taxonomy-Xenopus laevis Taxonomy-Mus musculus Taxonomy-Mus musculus Taxonomy-Mus musculus Taxonomy-Xenopus laevis Taxonomy-Mus musculus Taxonomy-Mus musculus Taxonomy-Mus musculus
+
+Sys. Dim.
+8 31 31 31 31 6
+
+Par. Dim.
+64 55 55 55 49 18
+
+Time Span
+[0.0, 100.0] [0.0, 2.0] [0.0, 3.0] [0.0, 0.15] [0.0, 750.0] [0.0, 1986.0]
+
+15
+
+76
+
+[0.0, 60.0]
+
+43
+
+16
+
+[0.0, 1000.0]
+
+23
+
+108
+
+[0.0, 5.0]
+
+3
+
+9
+
+[0.0, 107.6]
+
+5
+
+10
+
+[0.0, 400.0]
+
+19
+
+110
+
+[0.0, 290.0]
+
+3
+
+6
+
+[0.0, 1985.2]
+
+17
+
+93
+
+[0.0, 0.4]
+
+38
+
+50
+
+[0.0, 55.0]
+
+182
+
+286
+
+[0.0, 60.0]
+
+190
+
+316
+
+[0.0, 84.8]
+
+119
+
+58
+
+[0.0, 1712.0]
+
+39
+
+410
+
+[0.0, 150.0]
+
+4 6 30 40 1012 7 8 54 14 8 12 64 15 23 38 12 11 11 11 12 11 11 11 12 11 11 11 12 11 11 11
+
+8
+
+[0.0, 12.0]
+
+20
+
+[0.0, 503.2]
+
+32
+
+[0.0, 33.2]
+
+37
+
+[0.0, 11.8]
+
+522
+
+[0.0, 2000.0]
+
+22
+
+[0.0, 1980.0]
+
+23
+
+[0.0, 6.0]
+
+135
+
+[0.0, 300.0]
+
+24
+
+[0.0, 10.0]
+
+12
+
+[0.0, 10.0]
+
+49
+
+[0.0, 94.8]
+
+131
+
+[0.0, 200.0]
+
+46
+
+[0.0, 8000.0]
+
+26
+
+[0.0, 350.0]
+
+73
+
+[0.0, 236.2]
+
+23
+
+[0.0, 500.0]
+
+22
+
+[0.0, 350.0]
+
+22
+
+[0.0, 500.0]
+
+26
+
+[0.0, 600.0]
+
+23
+
+[0.0, 266.8]
+
+22
+
+[0.0, 400.0]
+
+22
+
+[0.0, 300.0]
+
+26
+
+[0.0, 294.8]
+
+23
+
+[0.0, 500.0]
+
+22
+
+[0.0, 350.0]
+
+22
+
+[0.0, 500.0]
+
+26
+
+[0.0, 600.0]
+
+23
+
+[0.0, 400.0]
+
+22
+
+[0.0, 350.0]
+
+22
+
+[0.0, 280.0]
+
+26
+
+[0.0, 350.0]
+
+Continued on next page
+
+49
+
+A Regime-Aware Trajectory Prediction Framework for 1000+ Systems Biology Models
+
+Model ID
+
+Reference
+
+MODEL1204280017 MODEL1204280018 MODEL1204280019 MODEL1204280021 MODEL1204280022 MODEL1204280023 MODEL1204280025 MODEL1204280029 MODEL1204280030 MODEL1204280031 MODEL1204280032 MODEL1204280033 MODEL1204280034 MODEL1204280035 MODEL1204280037 MODEL1204280038 MODEL1204280039 MODEL1208030000 MODEL1303010000 MODEL1303140000
+MODEL1303260000
+
+Sarma2012 Sarma2012 Sarma2012 Sarma2012 Sarma2012 Sarma2012 Sarma2012 Sarma2012 Sarma2012 Sarma2012 Sarma2012 Sarma2012 Sarma2012 Sarma2012 Sarma2012 Sarma2012 Sarma2012 Mandlik2013 Lopez2013 Mazemondet 2012 Smallbone2013
+
+MODEL1303260001 Smallbone2013
+
+MODEL1303260002 Smallbone2013
+
+MODEL1303260003 Smallbone2013
+
+MODEL1303260004 Smallbone2013
+
+MODEL1303260005 Smallbone2013
+
+MODEL1303260006 Smallbone2013
+
+MODEL1303260007 Smallbone2013
+
+MODEL1303260008 Smallbone2013
+
+MODEL1303260009 Smallbone2013
+
+MODEL1303260010 Smallbone2013
+
+MODEL1303260011 Smallbone2013
+
+MODEL1303260012 Smallbone2013
+
+MODEL1303260013 Smallbone2013
+
+MODEL1303260014 Smallbone2013
+
+MODEL1303260015 Smallbone2013
+
+MODEL1303260016 Smallbone2013
+
+Domain
+Taxonomy-Xenopus laevis Taxonomy-Mus musculus Taxonomy-Mus musculus Taxonomy-Xenopus laevis Taxonomy-Mus musculus Taxonomy-Mus musculus Taxonomy-Xenopus laevis Taxonomy-Xenopus laevis Taxonomy-Mus musculus Taxonomy-Mus musculus Taxonomy-Mus musculus Taxonomy-Xenopus laevis Taxonomy-Mus musculus Taxonomy-Mus musculus Taxonomy-Xenopus laevis Taxonomy-Mus musculus Taxonomy-Mus musculus Taxonomy-Leishmania Taxonomy-Homo sapiens Taxonomy-Homo sapiens
+Saccharomyces cerevisiae | glycolytic process Saccharomyces cerevisiae | glycolytic process Saccharomyces cerevisiae | glycolytic process Saccharomyces cerevisiae | glycolytic process Saccharomyces cerevisiae | glycolytic process Saccharomyces cerevisiae | glycolytic process Saccharomyces cerevisiae | glycolytic process Saccharomyces cerevisiae | glycolytic process Saccharomyces cerevisiae | glycolytic process Saccharomyces cerevisiae | glycolytic process Saccharomyces cerevisiae | glycolytic process Saccharomyces cerevisiae | glycolytic process Saccharomyces cerevisiae | glycolytic process Saccharomyces cerevisiae | glycolytic process Saccharomyces cerevisiae | glycolytic process Saccharomyces cerevisiae | glycolytic process Saccharomyces cerevisiae | glycolytic process
+
+Sys. Dim.
+25 24 24 25 24 24 25 25 24 24 27 12 11 11 12 11 11 6 74 5
+
+Par. Dim.
+37 37 37 37 37 37 37 37 37 37 45 23 22 22 23 22 22 27 106 12
+
+Time Span
+[0.0, 1000.0] [0.0, 1000.0] [0.0, 1503.0] [0.0, 1541.2] [0.0, 1000.0] [0.0, 1572.4] [0.0, 1200.0] [0.0, 1200.0] [0.0, 5000.0] [0.0, 5000.0] [0.0, 5000.0] [0.0, 700.0] [0.0, 421.6] [0.0, 559.6] [0.0, 201.2] [0.0, 500.0] [0.0, 346.4] [0.0, 30.0] [0.0, 10000.0] [0.0, 302.0]
+
+15
+
+93
+
+[0.0, 154.4]
+
+15
+
+95
+
+[0.0, 154.0]
+
+15
+
+105
+
+[0.0, 182.0]
+
+15
+
+106
+
+[0.0, 100.0]
+
+16
+
+111
+
+[0.0, 97.2]
+
+16
+
+111
+
+[0.0, 103.8]
+
+20
+
+128
+
+[0.0, 156.8]
+
+20
+
+129
+
+[0.0, 109.0]
+
+20
+
+132
+
+[0.0, 472.0]
+
+20
+
+142
+
+[0.0, 518.4]
+
+20
+
+142
+
+[0.0, 465.6]
+
+20
+
+142
+
+[0.0, 300.0]
+
+20
+
+145
+
+[0.0, 200.0]
+
+20
+
+146
+
+[0.0, 607.6]
+
+20
+
+155
+
+[0.0, 573.6]
+
+20
+
+155
+
+[0.0, 575.4]
+
+20
+
+166
+
+[0.0, 526.6]
+
+Continued on next page
+
+50
+
+A Regime-Aware Trajectory Prediction Framework for 1000+ Systems Biology Models
+
+Model ID
+
+Reference
+
+MODEL1303260017 Smallbone2013
+
+MODEL1303260018 Smallbone2013
+
+MODEL1304300000 MODEL1308080003 MODEL1403250001 MODEL1403250002 MODEL1409050001 MODEL1409240002
+
+Hofmeyr1996 Cao2010 vanEunen2012 Rao2014 Rutkis2013 Qosa2014
+
+MODEL1411130000 MODEL1412200000 MODEL1502270000 MODEL1503180002 MODEL1503180004 MODEL1503180005 MODEL1503180006 MODEL1504010000 MODEL1504080004 MODEL1504080005 MODEL1504080006 MODEL1504160000 MODEL1505110000 MODEL1506070001 MODEL1509020000 MODEL1509050002 MODEL1510230001 MODEL1510230002 MODEL1510230003 MODEL1510230004 MODEL1510230005 MODEL1601250000 MODEL1603150000 MODEL1603270000
+MODEL1604100000
+MODEL1608100000 MODEL1608100001 MODEL1609100001 MODEL1610100003 MODEL1611030000 MODEL1611160001 MODEL1611160002 MODEL1701170000 MODEL1701170001 MODEL1704110000 MODEL1704110001 MODEL1704110002 MODEL1704110003
+
+Miao2014 Talemi2015 Weisse2015 Smallbone2015 Smallbone2015 Smallbone2015 Smallbone2015 Shestov2014 Costa2015 Costa2015 Costa2015 Wu2011 Millard2016 Nguyen2014 Ashall2009 Perrett2014 Rantasalo2016 Rantasalo2016 Rantasalo2016 Rantasalo2016 Rantasalo2016 Tortolina2015 Saa2016 D1 LTP time window Mukhopadhyay 2013 Aguilera2017 Aguilera2017 Adams2013 Proctor2017 Guisoni2016 Leber2016 Leber2016 Yapo2017 Yapo2017 Proctor2017 Proctor2017 Proctor2017 Proctor2017
+
+MODEL1704110004 Proctor2017
+
+Domain
+Saccharomyces cerevisiae | glycolytic process Saccharomyces cerevisiae | glycolytic process regulation of catalytic activity Taxonomy-Escherichia coli Taxonomy-Saccharomyces cerevisiae Taxonomy-Saccharomyces cerevisiae Taxonomy-Mus musculus|TaxonomyHomo sapiens -
+-
+-
+-
+
+Sys. Dim. Par. Dim. Time Span
+
+20
+
+168
+
+[0.0, 546.2]
+
+20
+
+168
+
+[0.0, 305.0]
+
+3
+
+8
+
+[0.0, 2.0]
+
+14
+
+30
+
+[0.0, 100000.0]
+
+13
+
+88
+
+[0.0, 2.0]
+
+8
+
+50
+
+[0.0, 3.6]
+
+20
+
+87
+
+[0.0, 6500.0]
+
+6
+
+14
+
+[0.0, 46.2]
+
+8
+
+12
+
+[0.0, 10.0]
+
+5
+
+19
+
+[0.0, 284.4]
+
+22
+
+32
+
+[0.0, 0.15]
+
+4
+
+7
+
+[0.0, 10000.0]
+
+3
+
+11
+
+[0.0, 15.0]
+
+3
+
+9
+
+[0.0, 100.0]
+
+3
+
+12
+
+[0.0, 66.0]
+
+21
+
+144
+
+[0.0, 4.4]
+
+18
+
+145
+
+[0.0, 200.0]
+
+18
+
+140
+
+[0.0, 200.0]
+
+18
+
+149
+
+[0.0, 200.0]
+
+6
+
+11
+
+[0.0, 30.0]
+
+64
+
+440
+
+[0.0, 87.8]
+
+21
+
+60
+
+[0.0, 1250.0]
+
+14
+
+38
+
+[0.0, 50000.0]
+
+11
+
+39
+
+[0.0, 275.2]
+
+13
+
+33
+
+[0.0, 3.2]
+
+13
+
+33
+
+[0.0, 0.7]
+
+13
+
+33
+
+[0.0, 2.8]
+
+18
+
+37
+
+[0.0, 0.3]
+
+18
+
+37
+
+[0.0, 0.06]
+
+456
+
+862
+
+[0.0, 264.6]
+
+5
+
+40
+
+[0.0, 1000.0]
+
+87
+
+143
+
+[0.0, 20.0]
+
+53
+
+22
+
+[0.0, 0.4]
+
+2
+
+4
+
+[0.0, 267.2]
+
+7
+
+18
+
+[0.0, 1500.0]
+
+6
+
+7
+
+[0.0, 1000.0]
+
+7
+
+9
+
+[0.0, 10.0]
+
+5
+
+5
+
+[0.0, 27.2]
+
+42
+
+117
+
+[0.0, 43.4]
+
+37
+
+76
+
+[0.0, 860.8]
+
+52
+
+115
+
+[0.0, 800.0]
+
+64
+
+152
+
+[0.0, 500.0]
+
+9
+
+17
+
+[0.0, 500000.0]
+
+16
+
+31
+
+[0.0, 1879.2]
+
+11
+
+17
+
+[0.0, 500000.0]
+
+14
+
+21
+
+[0.0, 2000000.
+
+0]
+
+46
+
+84
+
+[0.0, 1917.8]
+
+Continued on next page
+
+51
+
+A Regime-Aware Trajectory Prediction Framework for 1000+ Systems Biology Models
+
+Model ID
+
+Reference
+
+MODEL1704190000
+MODEL1705030000 MODEL1705030001 MODEL1705170000 MODEL1705170001 MODEL1705170002 MODEL1705170003 MODEL1705170004 MODEL1705170005 MODEL1708210000
+MODEL1808280013 MODEL1812050001
+MODEL1907260001 MODEL1907310002 MODEL1908270001
+MODEL1908270002 MODEL1908290001 MODEL1909050002 MODEL1909090002 MODEL1909090003
+MODEL1909100002 MODEL1909160002 MODEL1910240001 MODEL1911120004 MODEL1911130007 MODEL1911140002 MODEL1911150001 MODEL1911190001 MODEL1911270001 MODEL1911270002 MODEL1912090002 MODEL1912100004 MODEL1912100005 MODEL1912120002 MODEL1912120005 MODEL2001080001 MODEL2001090001 MODEL2001090002 MODEL2001130003 MODEL2001160001 MODEL2003030002 MODEL2003060002 MODEL2003170002 MODEL2003180001 MODEL2003190008 MODEL2003200001 MODEL2004300002
+
+Phosphatase activities on PI 3 4 5 P3 and PI 3 4 P2 DallePezze2016 DallePezze2016 Proctor2017 Proctor2017 Proctor2017 Proctor2017 Proctor2017 Proctor2017 PanRTK model for single cell line Ducrot2009 Rohan D Gidvani2012 dePillis2005 Arciero2004 Nikolopoulou 2018 ODea2007 Hetmanski2019 Ribba2018 Wei2019 Shariatpanahi 2018 Louzoun2014 Reyes2017 Petrov2018 Gupta2019 Hutchinson2016 Tiwari2019 Tsur2019 Day2015 Sigal2019 Yu2019 Kawka2014 Nguyen2013 Nguyen2013 Sandip2013 Mkango2019 Guimera2017 Leeuwen2007 Nanda2013 Kronik2010 dePillis2007 Back2018 Grigolon2018 Vibert2017 Gidvani2012 Garira2019 Jafarnejad2019 Konrath2020
+
+Domain
+-
+Taxonomy-Homo sapiens
+-
+Taxonomy-Mus musculus Taxonomy-Homo sapiens -
+-
+Taxonomy-Mus musculus Taxonomy-Homo sapiens Taxonomy-Mus musculus immune response Taxonomy-Mus musculus Taxonomy-Mus musculus Wnt signaling pathway Taxonomy-Homo sapiens Taxonomy-Homo sapiens Taxonomy-Homo sapiens Taxonomy-Homo sapiens cell redox homeostasis; mitochondrion Taxonomy-Homo sapiens Homo sapiens Taxonomy-Homo sapiens Taxonomy-Homo sapiens Taxonomy-unidentified plant Taxonomy-Saccharomyces cerevisiae Taxonomy-Homo sapiens -
+
+52
+
+Sys. Dim. Par. Dim. Time Span
+
+12
+
+31
+
+[0.0, 1187.6]
+
+29
+
+50
+
+[0.0, 30.0]
+
+29
+
+53
+
+[0.0, 48.8]
+
+10
+
+15
+
+[0.0, 1989.4]
+
+5
+
+8
+
+[0.0, 5000.0]
+
+7
+
+11
+
+[0.0, 10000.0]
+
+12
+
+18
+
+[0.0, 1988.6]
+
+17
+
+25
+
+[0.0, 10000.0]
+
+50
+
+83
+
+[0.0, 1981.8]
+
+59
+
+124
+
+[0.0, 600.0]
+
+10
+
+35
+
+[0.0, 1990.6]
+
+13
+
+24
+
+[0.0, 1987.2]
+
+3
+
+23
+
+[0.0, 52.8]
+
+4
+
+20
+
+[0.0, 255.2]
+
+3
+
+31
+
+[0.0, 210.8]
+
+24
+
+70
+
+[0.0, 1531.8]
+
+58
+
+97
+
+[0.0, 1978.8]
+
+2
+
+13
+
+[0.0, 300.0]
+
+5
+
+27
+
+[0.0, 17.6]
+
+4
+
+29
+
+[0.0, 195.4]
+
+4
+
+24
+
+[0.0, 494.6]
+
+8
+
+29
+
+[0.0, 3000.0]
+
+5
+
+13
+
+[0.0, 8000.0]
+
+4
+
+26
+
+[0.0, 500.0]
+
+16
+
+49
+
+[0.0, 828.4]
+
+17
+
+38
+
+[0.0, 6500.0]
+
+3
+
+10
+
+[0.0, 1896.4]
+
+6
+
+39
+
+[0.0, 488.8]
+
+7
+
+35
+
+[0.0, 500.0]
+
+4
+
+17
+
+[0.0, 46.2]
+
+9
+
+19
+
+[0.0, 20000.0]
+
+22
+
+49
+
+[0.0, 10000.0]
+
+7
+
+19
+
+[0.0, 50.4]
+
+4
+
+11
+
+[0.0, 37.2]
+
+6
+
+29
+
+[0.0, 35.0]
+
+15
+
+9
+
+[0.0, 803.2]
+
+11
+
+29
+
+[0.0, 5.0]
+
+5
+
+28
+
+[0.0, 1000.0]
+
+7
+
+15
+
+[0.0, 600.0]
+
+4
+
+15
+
+[0.0, 288.4]
+
+5
+
+12
+
+[0.0, 100.0]
+
+3
+
+9
+
+[0.0, 50.0]
+
+6
+
+14
+
+[0.0, 1.4]
+
+13
+
+24
+
+[0.0, 1.0]
+
+6
+
+65
+
+[0.0, 1901.0]
+
+49
+
+71
+
+[0.0, 0.6]
+
+7
+
+41
+
+[0.0, 10.0]
+
+Continued on next page
+
+A Regime-Aware Trajectory Prediction Framework for 1000+ Systems Biology Models
+
+Model ID
+
+Reference
+
+MODEL2005070001
+MODEL2005130001 MODEL2007090001
+
+Hatzimanikatis 1999 Ma2005 Nwabugwu2013
+
+MODEL2009230001 MODEL2011030003 MODEL2012040002
+MODEL2103010001 MODEL2103290001 MODEL2109110006 MODEL2112290001 MODEL2201210001 MODEL2201250001
+MODEL2202020001 MODEL2206230001 MODEL2209260001 MODEL2210070001 MODEL2301180001 MODEL2306170002 MODEL2306300001 MODEL2307050001 MODEL2307110001 MODEL2307130001 MODEL2311140001
+MODEL2401050001 MODEL2426780967 MODEL2427021978 MODEL2502170001 MODEL2502170002 MODEL2503310002 MODEL2937159804 MODEL3631586579 MODEL4780784080 MODEL4816599063 MODEL4821294342 MODEL4992089662 MODEL5954483266 MODEL6185511733 MODEL6185746832 MODEL6623617994 MODEL6624091635 MODEL6624199343 MODEL6655501972 MODEL7743212613 MODEL7743315447 MODEL7743358405 MODEL7743444866 MODEL7743528808 MODEL7743576806 MODEL7743608569
+
+Hardiansyah2019 Bouchnita2020 Khandibharad 2022 Hetmanski2021 Sharma2022 Mullinax2016 Berzins2022 Sivery2016 Potassium balance 2021 Slaviero2021 Mosbacher2022 Grignard2022 Maier2022 Li2021 Harish2009 Davies2023 Sobotta2017 Mothes2020 Konrath2023 DeboraSoncini 2024 Lang2024 MODEL2426 MODEL2427 Hayashi2013 Hayashi2013 Kurpad2023 Shimoni2009 MODEL3631 Hayashi1999 mahaney2000 Kierzek2001 Banaji2005 Koster1988 Qiao2007 Qiao2007 Lambeth2002 MODEL6624 Martins2001 Nijhout2004 Radulescu2008 Radulescu2008 Radulescu2008 Radulescu2008 Radulescu2008 Radulescu2008 Radulescu2008
+
+Domain
+cell cycle
+Homo sapiens Taxonomy-Homo sapiens|NCIt-TumorInfiltrating Immune Cell Taxonomy-Homo sapiens -
+Taxonomy-Homo sapiens BioModels Database-BIOMD0000000222 -
+Taxonomy-Homo sapiens -
+Taxonomy-Saccharomyces cerevisiae Taxonomy-Saccharomyces cerevisiae Taxonomy-Mus musculus Taxonomy-Mus musculus Taxonomy-Homo sapiens Taxonomy-Escherichia coli Taxonomy-Embryophyta Taxonomy-Rattus Taxonomy-Spodoptera frugiperda Taxonomy-Escherichia coli Homo sapiens | blood circulation Taxonomy-Xenopus laevis Taxonomy-Eukaryota Taxonomy-Eukaryota Taxonomy-Homo sapiens Taxonomy-Lactococcus lactis Taxonomy-Saccharomyces cerevisiae Taxonomy-Mammalia Taxonomy-Mammalia Taxonomy-Mammalia Taxonomy-Mammalia Taxonomy-Mammalia
+
+Sys. Dim.
+3
+3 16
+8 6 63
+58 8 4 30 7 15
+27 98 6 44 4 38 29 35 7 20 18
+124 17 17 51 26 3 6 436 10 10 8 36 2 9 14 20 23 3 6 5 6 8 18 19 21 30
+
+Par. Dim. Time Span
+
+19
+
+[0.0, 0.002]
+
+36
+
+[0.0, 8.0]
+
+48
+
+[0.0, 14000.0]
+
+29
+
+[0.0, 5.0]
+
+11
+
+[0.0, 250.0]
+
+83
+
+[0.0, 384.0]
+
+99
+
+[0.0, 1856.0]
+
+88
+
+[0.0, 5000.0]
+
+17
+
+[0.0, 101.4]
+
+229
+
+[0.0, 13.0]
+
+21
+
+[0.0, 12.8]
+
+72
+
+[0.0, 60.0]
+
+196
+
+[0.0, 40.0]
+
+280
+
+[0.0, 10.0]
+
+12
+
+[0.0, 37.6]
+
+63
+
+[0.0, 2500.0]
+
+11
+
+[0.0, 16.0]
+
+71
+
+[0.0, 35.0]
+
+108
+
+[0.0, 433.6]
+
+74
+
+[0.0, 1995.2]
+
+17
+
+[0.0, 502.4]
+
+29
+
+[0.0, 1990.0]
+
+157
+
+[0.0, 1971.2]
+
+325 88 88 67 42 13 14 1661 16 17 18 106 12 12 18 85 151 13 43 41 40 37 100 100 100 95
+
+[0.0, 2000.0] [0.0, 5.2] [0.0, 5.2] [0.0, 1263.6] [0.0, 1643.2] [0.0, 20000.0] [0.0, 640.0] [0.0, 0.4] [0.0, 22.0] [0.0, 25.0] [0.0, 269.6] [0.0, 220.2] [0.0, 600.0] [0.0, 0.6] [0.0, 500.0] [0.0, 11.6] [0.0, 0.5] [0.0, 50000.0] [0.0, 10000.0] [0.0, 15000.0] [0.0, 30000.0] [0.0, 32000.0] [0.0, 1016.0] [0.0, 1972.8] [0.0, 60000.0] [0.0, 60000.0]
+
+Continued on next page
+
+53
+
+A Regime-Aware Trajectory Prediction Framework for 1000+ Systems Biology Models
+
+Model ID
+
+Reference
+
+MODEL7743631122 MODEL8236441887 MODEL8236480549 MODEL8236520494 MODEL8262229752 MODEL8459127548 MODEL8478881246 MODEL8938094216 MODEL9070467164 MODEL9071122126 MODEL9071773985 MODEL9077438479 MODEL9079179924 MODEL9079740062 MODEL9080388197 MODEL9080747936 MODEL9081220742 MODEL9085850385 MODEL9086207764 MODEL9086518048 MODEL9086628127 MODEL9086926384 MODEL9086953089 MODEL9087255381 MODEL9087474843 MODEL9087766308 MODEL9087988095 MODEL9088169066 MODEL9088294310 MODEL9089491423
+MODEL9089538076
+MODEL9089914876
+MODEL9147091146
+MODEL9147232940
+MODEL9147975215
+
+Radulescu2008 Yang2008 Yang2008 Yang2008 MODEL8262 You2010 Basak Cell 2007 dAlcantara2003 Bhalla2002 Bhalla1999 Bhalla2001 Bhalla2002 Bhalla2002 Bhalla2004 Bhalla2004 Bhalla2004 Bhalla2004 Bhalla2004 Hayer2005 Hayer2005 Hayer2005 Hayer2005 Hayer2005 Hayer2005 Hayer2005 Soud1999 Soud1999 Soud1999 Soud1999 Ajay Bhalla 2004 Ajay Bhalla 2004 PKM MKP 3 Tuning Ajay Bhalla 2004 Feedback Tuning Ajay Bhalla 2007 Bistable Ajay Bhalla 2007 PKM Asthagiri2001
+
+Domain
+Taxonomy-Mammalia Taxonomy-Homo sapiens Taxonomy-Homo sapiens Taxonomy-Homo sapiens Taxonomy-Escherichia coli Taxonomy-Saccharomyces cerevisiae Taxonomy-Homo sapiens Taxonomy-Homo sapiens Taxonomy-Mus musculus Taxonomy-Homo sapiens Taxonomy-Homo sapiens Taxonomy-Mus musculus Taxonomy-Mammalia Taxonomy-Mammalia Taxonomy-Mammalia Taxonomy-Mammalia Taxonomy-Mammalia Taxonomy-Mammalia Taxonomy-Mammalia Taxonomy-Mammalia Taxonomy-Mammalia Taxonomy-Mammalia Taxonomy-Mammalia Taxonomy-Mammalia Taxonomy-Homo sapiens Taxonomy-Homo sapiens Taxonomy-Homo sapiens Taxonomy-Homo sapiens Taxonomy-Rattus
+Taxonomy-Rattus
+Taxonomy-Rattus
+Taxonomy-Rattus
+Taxonomy-Rattus
+Taxonomy-Cricetulus griseus
+
+Sys. Dim.
+39 19 20 7 21 30 32 14 86 59 66 26 75 26 12 44 174 54 273 273 14 77 104 275 276 5 5 5 5 181
+
+Par. Dim.
+90 73 67 24 25 37 101 16 169 108 139 43 136 43 20 84 337 94 570 580 28 148 196 586 586 4 4 4 4 349
+
+Time Span
+[0.0, 60000.0] [0.0, 78.0] [0.0, 20000.0] [0.0, 10.0] [0.0, 700.4] [0.0, 1946.0] [0.0, 1720.8] [0.0, 10.0] [0.0, 1610.2] [0.0, 513.2] [0.0, 295.8] [0.0, 136.8] [0.0, 1597.2] [0.0, 20.0] [0.0, 87.2] [0.0, 777.8] [0.0, 1399.2] [0.0, 537.8] [0.0, 0.4] [0.0, 140.0] [0.0, 12500.0] [0.0, 148.4] [0.0, 1566.4] [0.0, 882.0] [0.0, 482.0] [0.0, 0.1] [0.0, 0.4] [0.0, 0.3] [0.0, 0.15] [0.0, 205.6]
+
+182
+
+353
+
+[0.0, 8000.0]
+
+179
+
+347
+
+[0.0, 5000.0]
+
+71
+
+132
+
+[0.0, 1436.8]
+
+59
+
+104
+
+[0.0, 1.6]
+
+36
+
+47
+
+[0.0, 8000.0]
+
+54
+
+

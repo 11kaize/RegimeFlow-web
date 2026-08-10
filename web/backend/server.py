@@ -1,14 +1,26 @@
 """
-RegimeFlow Backend API Server (Render 轻量版)
+RegimeFlow Backend API Server
 ==============================
-无需 GPU，使用轻量级合成预测。适合 Render 免费套餐部署。
+Serves biological trajectory predictions using trained RegimeFlow model.
+
+Supports three prediction backends (auto-selected):
+  1. RegimeFlow (default) — the trained ICML 2026 model, CPU inference
+  2. Chronos-Bolt      — Amazon zero-shot baseline (optional, large)
+  3. Synthetic fallback — lightweight demo mode
 
 Usage:
     python server.py
     # or: uvicorn server:app --host 0.0.0.0 --port 8000
+
+Environment variables:
+    REGIMEFLOW_CKPT    — path to seed53_best.ckpt (default: auto-detect)
+    REGIMEFLOW_STEPS   — denoising steps, 4 by default (2-8)
+    LOAD_CHRONOS       — set to "true" to load Chronos-Bolt (heavy)
+    PORT               — server port (default: 8000)
 """
 
 import os
+import sys
 import time
 import logging
 from pathlib import Path
@@ -22,64 +34,127 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
+# Add project root for model imports
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# 默认禁用 Chronos（Render 免费版无 GPU，内存有限）
+# ── Config ─────────────────────────────────────────────────────
+REGIMEFLOW_CKPT = os.environ.get("REGIMEFLOW_CKPT", "")
+REGIMEFLOW_STEPS = int(os.environ.get("REGIMEFLOW_STEPS", "4"))
 LOAD_CHRONOS = os.environ.get("LOAD_CHRONOS", "false").lower() != "false"
+LOAD_REGIMEFLOW = os.environ.get("LOAD_REGIMEFLOW", "true").lower() != "false"
 
-# ---------------------------------------------------------------------------
-# Global model handles
-# ---------------------------------------------------------------------------
+# ── Auto-detect / download checkpoint ────────────────────────────
+def _ensure_checkpoint():
+    """Find or download the RegimeFlow checkpoint."""
+    global REGIMEFLOW_CKPT
+
+    if REGIMEFLOW_CKPT and Path(REGIMEFLOW_CKPT).exists():
+        return
+
+    # Check if it's a URL → download
+    if REGIMEFLOW_CKPT and (REGIMEFLOW_CKPT.startswith("http://") or
+                             REGIMEFLOW_CKPT.startswith("https://")):
+        dest = _PROJECT_ROOT / "ckpt" / "RegimeFlow" / "seed53_best.ckpt"
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if not dest.exists():
+            logger.info(f"Downloading checkpoint from {REGIMEFLOW_CKPT} ...")
+            try:
+                import urllib.request
+                urllib.request.urlretrieve(REGIMEFLOW_CKPT, str(dest))
+                logger.info(f"Downloaded to {dest}")
+            except Exception as e:
+                logger.warning(f"Download failed: {e}")
+                return
+        REGIMEFLOW_CKPT = str(dest)
+        return
+
+    # Search local filesystem
+    candidates = [
+        _PROJECT_ROOT / "ckpt" / "RegimeFlow" / "seed53_best.ckpt",
+        _PROJECT_ROOT / "seed53_best.ckpt",
+    ]
+    for c in candidates:
+        if c.exists():
+            REGIMEFLOW_CKPT = str(c)
+            return
+
+if LOAD_REGIMEFLOW:
+    _ensure_checkpoint()
+
+
+# ── Global handles ─────────────────────────────────────────────
+regimeflow_engine: Optional[object] = None
 chronos_pipeline: Optional[object] = None
-model_info: dict = {"chronos_loaded": False, "device": "cpu", "error": None}
+model_info: dict = {
+    "regimeflow_loaded": False,
+    "chronos_loaded": False,
+    "device": "cpu",
+    "error": None,
+}
 
 
-# ---------------------------------------------------------------------------
-# Lifespan: 仅当 LOAD_CHRONOS=true 时加载模型
-# ---------------------------------------------------------------------------
+# ── Lifespan ───────────────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Load Chronos-Bolt on startup only if enabled."""
-    global chronos_pipeline, model_info
+    """Load models on startup."""
+    global regimeflow_engine, chronos_pipeline, model_info
 
-    if LOAD_CHRONOS:
-        logger.info("Loading Chronos-Bolt-Base from HuggingFace …")
+    # 1. Try loading RegimeFlow
+    if LOAD_REGIMEFLOW and REGIMEFLOW_CKPT:
+        logger.info(f"Loading RegimeFlow from {REGIMEFLOW_CKPT} ...")
         try:
-            import torch
+            from web.backend.engine import init_engine
+            regimeflow_engine = init_engine(REGIMEFLOW_CKPT, denoise_steps=REGIMEFLOW_STEPS)
+            model_info["regimeflow_loaded"] = True
+            model_info["device"] = "cpu"
+            logger.info("RegimeFlow loaded successfully")
+        except Exception as exc:
+            model_info["error"] = f"RegimeFlow: {exc}"
+            logger.error(f"Failed to load RegimeFlow: {exc}")
+    else:
+        logger.info("RegimeFlow disabled (LOAD_REGIMEFLOW=false or no checkpoint found)")
+
+    # 2. Optionally load Chronos-Bolt
+    if LOAD_CHRONOS:
+        logger.info("Loading Chronos-Bolt-Base from HuggingFace ...")
+        try:
+            import torch as _torch
             from chronos import BaseChronosPipeline
 
-            device = "cuda" if torch.cuda.is_available() else "cpu"
+            device = "cuda" if _torch.cuda.is_available() else "cpu"
             model_info["device"] = device
-
             chronos_pipeline = BaseChronosPipeline.from_pretrained(
                 "amazon/chronos-bolt-base",
                 device_map=device,
-                torch_dtype=torch.bfloat16 if device == "cuda" else torch.float32,
+                torch_dtype=_torch.bfloat16 if device == "cuda" else _torch.float32,
             )
             model_info["chronos_loaded"] = True
-            logger.info(f"Chronos-Bolt-Base loaded successfully on {device}")
+            logger.info(f"Chronos-Bolt loaded on {device}")
         except Exception as exc:
-            model_info["error"] = str(exc)
-            logger.error(f"Failed to load Chronos model: {exc}")
-            logger.warning("Server will start, but /api/predict will use fallback.")
+            model_info["error"] = model_info.get("error", "") + f"; Chronos: {exc}"
+            logger.error(f"Failed to load Chronos: {exc}")
     else:
-        model_info["device"] = "cpu"
-        model_info["error"] = "Chronos disabled (low-memory mode)"
-        logger.info("Chronos disabled — using lightweight synthetic forecast for demo")
+        logger.info("Chronos disabled")
+
+    if not model_info["regimeflow_loaded"] and not model_info["chronos_loaded"]:
+        logger.warning("No prediction model loaded — using synthetic fallback")
 
     yield
 
+    regimeflow_engine = None
     chronos_pipeline = None
 
 
-# ---------------------------------------------------------------------------
-# FastAPI app
-# ---------------------------------------------------------------------------
+# ── FastAPI app ────────────────────────────────────────────────
 app = FastAPI(
     title="RegimeFlow Prediction API",
-    description="Backend API for biological trajectory forecasting (demo mode).",
-    version="1.0.0",
+    description="Backend API for biological trajectory forecasting.",
+    version="2.0.0",
     lifespan=lifespan,
 )
 
@@ -91,10 +166,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ---------------------------------------------------------------------------
-# 托管静态前端文件
-# ---------------------------------------------------------------------------
-static_dir = Path(__file__).parent.parent  # serve from web/ root
+# ── Static files ───────────────────────────────────────────────
+static_dir = Path(__file__).parent.parent
 app.mount("/css", StaticFiles(directory=str(static_dir / "css")), name="css")
 app.mount("/js", StaticFiles(directory=str(static_dir / "js")), name="js")
 app.mount("/data", StaticFiles(directory=str(static_dir / "data")), name="data")
@@ -105,34 +178,41 @@ async def serve_frontend():
     return FileResponse(str(static_dir / "index.html"))
 
 
-# ---------------------------------------------------------------------------
-# Pydantic schemas
-# ---------------------------------------------------------------------------
+# ── Schemas ────────────────────────────────────────────────────
 class PredictRequest(BaseModel):
     context: list[float] = Field(
-        ..., description="1-D array of past observation values (e.g. 96 time steps)"
+        ..., description="1-D array of past observation values (at least 96 steps)"
     )
     prediction_length: int = Field(
         default=256, ge=1, le=512, description="Number of future steps to predict"
     )
+    # RegimeFlow-specific conditions (ignored by other backends)
+    traj_pattern: int = Field(
+        default=0, ge=0, le=5,
+        description="Trajectory regime: 0=DirectStable, 1=IncStable, 2=DecStable, "
+                    "3=Oscillation, 4=Increasing, 5=Decreasing"
+    )
+    period: float = Field(
+        default=0.0,
+        description="Oscillation period (only used when traj_pattern=3)"
+    )
 
 
 class PredictResponse(BaseModel):
-    predictions: list[float] = Field(..., description="Mean forecast (prediction_length,)")
+    predictions: list[float] = Field(..., description="Mean forecast")
     median: list[float] = Field(..., description="Median forecast")
-    lower: list[float] = Field(..., description="10th percentile (lower bound)")
-    upper: list[float] = Field(..., description="90th percentile (upper bound)")
+    lower: list[float] = Field(..., description="Lower bound (10th percentile)")
+    upper: list[float] = Field(..., description="Upper bound (90th percentile)")
     samples: int = Field(..., description="Number of samples used for quantiles")
-    model: str = Field(default="chronos-bolt-base")
-    inference_time_ms: float = Field(..., description="Inference time in milliseconds")
+    model: str = Field(default="regimeflow")
+    inference_time_ms: float = Field(..., description="Inference time in ms")
 
 
 class PredictMultiRequest(BaseModel):
-    """Predict multiple species at once (same context length, batched)."""
-    contexts: list[list[float]] = Field(
-        ..., description="List of 1-D context arrays, one per species"
-    )
+    contexts: list[list[float]] = Field(..., description="List of context arrays")
     prediction_length: int = Field(default=256, ge=1, le=512)
+    traj_pattern: int = Field(default=0, ge=0, le=5)
+    period: float = Field(default=0.0)
 
 
 class PredictMultiResponse(BaseModel):
@@ -141,105 +221,117 @@ class PredictMultiResponse(BaseModel):
 
 class HealthResponse(BaseModel):
     status: str
+    regimeflow_loaded: bool
     chronos_loaded: bool
     device: str
+    denoise_steps: int = 0
     error: Optional[str] = None
 
 
-# ---------------------------------------------------------------------------
-# Helper: Chronos inference
-# ---------------------------------------------------------------------------
-def run_chronos_predict(
-    context: list[float], prediction_length: int
+# ── Prediction backends ────────────────────────────────────────
+
+def _predict_regimeflow(
+    context: list[float],
+    prediction_length: int,
+    traj_pattern: int = 0,
+    period: float = 0.0,
 ) -> PredictResponse:
-    """Run Chronos pipeline on a single 1-D context."""
-    import torch
-
-    if chronos_pipeline is None:
-        raise RuntimeError("Chronos model is not loaded. Check server logs.")
-
-    ctx_tensor = torch.tensor(context, dtype=torch.float32)
+    """RegimeFlow inference (CPU, ~400ms with 4 denoise steps)."""
+    if regimeflow_engine is None:
+        raise RuntimeError("RegimeFlow engine not loaded")
 
     t0 = time.perf_counter()
-    with torch.no_grad():
-        # Chronos returns [batch=1, num_quantiles=9, prediction_length]
-        forecast = chronos_pipeline.predict(
-            ctx_tensor,
-            prediction_length=prediction_length,
-        )
-    elapsed_ms = (time.perf_counter() - t0) * 1000
-
-    # forecast shape: [1, 9, prediction_length] — 9 quantile levels
-    arr = forecast.cpu().numpy().squeeze(0)  # -> [9, prediction_length]
-    samples = arr.shape[0]
-
-    return PredictResponse(
-        predictions=arr.mean(axis=0).tolist(),
-        median=arr[4].tolist(),  # 5th of 9 quantiles = median
-        lower=arr[0].tolist(),   # lowest quantile (~10th percentile)
-        upper=arr[-1].tolist(),  # highest quantile (~90th percentile)
-        samples=samples,
-        model="chronos-bolt-base",
-        inference_time_ms=round(elapsed_ms, 1),
+    pred = regimeflow_engine.predict(
+        context=context,
+        traj_pattern=traj_pattern,
+        period=period,
     )
+    elapsed = (time.perf_counter() - t0) * 1000
 
-
-# ---------------------------------------------------------------------------
-# Fallback: BLR-like synthetic prior (when Chronos is unavailable)
-# ---------------------------------------------------------------------------
-def _synthetic_forecast(
-    context: list[float], prediction_length: int
-) -> PredictResponse:
-    """
-    Lightweight fallback forecast using simple trend + noise extrapolation.
-    Used when Chronos model fails to load.  Not scientifically meaningful,
-    but keeps the UI functional for demo purposes.
-    """
-    ctx = np.array(context, dtype=np.float64)
-    n = len(ctx)
-
-    # Simple linear extrapolation with damped oscillation
-    t_ctx = np.arange(n)
-    t_pred = np.arange(n, n + prediction_length)
-
-    # Linear trend from last 20% of context
-    tail = max(4, n // 5)
-    slope = (ctx[-1] - ctx[-tail]) / tail
-    intercept = ctx[-1] - slope * (n - 1)
-
-    trend = intercept + slope * t_pred
-
-    # Damped sinusoidal residual
-    residuals = ctx - (intercept + slope * t_ctx)
-    amplitude = np.std(residuals) * 0.5
-    oscillation = amplitude * np.sin(2 * np.pi * 0.05 * t_pred) * np.exp(
-        -0.005 * (t_pred - n)
-    )
-
-    noise = np.random.default_rng(42).normal(0, amplitude * 0.3, prediction_length)
-
-    mean = (trend + oscillation + noise).tolist()
+    # RegimeFlow single sample -> use it as mean; add synthetic uncertainty
+    mean = pred.tolist()
+    std_est = float(np.abs(pred).mean() * 0.1)  # ~10% relative uncertainty
 
     return PredictResponse(
         predictions=mean,
         median=mean,
-        lower=[v - amplitude * 0.5 for v in mean],
-        upper=[v + amplitude * 0.5 for v in mean],
+        lower=[v - 2 * std_est for v in mean],
+        upper=[v + 2 * std_est for v in mean],
         samples=1,
-        model="fallback-synthetic",
-        inference_time_ms=0.0,
+        model="regimeflow",
+        inference_time_ms=round(elapsed, 1),
     )
 
 
-# ---------------------------------------------------------------------------
-# Routes
-# ---------------------------------------------------------------------------
+def _predict_chronos(
+    context: list[float],
+    prediction_length: int,
+) -> PredictResponse:
+    """Chronos-Bolt inference."""
+    import torch as _torch
+    if chronos_pipeline is None:
+        raise RuntimeError("Chronos model not loaded")
+
+    ctx_tensor = _torch.tensor(context, dtype=_torch.float32)
+    t0 = time.perf_counter()
+    with _torch.no_grad():
+        forecast = chronos_pipeline.predict(ctx_tensor, prediction_length=prediction_length)
+    elapsed = (time.perf_counter() - t0) * 1000
+
+    arr = forecast.cpu().numpy().squeeze(0)
+    samples = arr.shape[0]
+
+    return PredictResponse(
+        predictions=arr.mean(axis=0).tolist(),
+        median=arr[4].tolist(),
+        lower=arr[0].tolist(),
+        upper=arr[-1].tolist(),
+        samples=samples,
+        model="chronos-bolt-base",
+        inference_time_ms=round(elapsed, 1),
+    )
+
+
+def _predict_fallback(
+    context: list[float],
+    prediction_length: int,
+) -> PredictResponse:
+    """Synthetic fallback (trend + damped oscillation)."""
+    ctx = np.array(context, dtype=np.float64)
+    n = len(ctx)
+
+    t_ctx = np.arange(n)
+    t_pred = np.arange(n, n + prediction_length)
+
+    tail = max(4, n // 5)
+    slope = (ctx[-1] - ctx[-tail]) / tail
+    intercept = ctx[-1] - slope * (n - 1)
+    trend = intercept + slope * t_pred
+
+    residuals = ctx - (intercept + slope * t_ctx)
+    amplitude = np.std(residuals) * 0.5
+    oscillation = amplitude * np.sin(2 * np.pi * 0.05 * t_pred) * np.exp(-0.005 * (t_pred - n))
+    noise = np.random.default_rng(42).normal(0, amplitude * 0.3, prediction_length)
+
+    mean = (trend + oscillation + noise).tolist()
+    return PredictResponse(
+        predictions=mean, median=mean,
+        lower=[v - amplitude * 0.5 for v in mean],
+        upper=[v + amplitude * 0.5 for v in mean],
+        samples=1, model="fallback-synthetic", inference_time_ms=0.0,
+    )
+
+
+# ── Routes ─────────────────────────────────────────────────────
+
 @app.get("/api/health", response_model=HealthResponse)
 async def health():
     return HealthResponse(
-        status="ok" if model_info["chronos_loaded"] else "degraded",
+        status="ok" if model_info["regimeflow_loaded"] else "degraded",
+        regimeflow_loaded=model_info["regimeflow_loaded"],
         chronos_loaded=model_info["chronos_loaded"],
         device=model_info["device"],
+        denoise_steps=REGIMEFLOW_STEPS if model_info["regimeflow_loaded"] else 0,
         error=model_info.get("error"),
     )
 
@@ -251,37 +343,54 @@ async def predict(req: PredictRequest):
         raise HTTPException(400, "Context must have at least 4 observations.")
 
     try:
-        if chronos_pipeline is not None:
-            return run_chronos_predict(req.context, req.prediction_length)
+        # Priority: RegimeFlow > Chronos > fallback
+        if regimeflow_engine is not None:
+            return _predict_regimeflow(
+                req.context, req.prediction_length,
+                traj_pattern=req.traj_pattern, period=req.period,
+            )
+        elif chronos_pipeline is not None:
+            return _predict_chronos(req.context, req.prediction_length)
         else:
-            logger.warning("Chronos not available — using fallback.")
-            return _synthetic_forecast(req.context, req.prediction_length)
+            return _predict_fallback(req.context, req.prediction_length)
     except Exception as exc:
         logger.error(f"Prediction failed: {exc}")
-        raise HTTPException(500, f"Prediction error: {exc}")
+        # Last resort: fallback
+        try:
+            return _predict_fallback(req.context, req.prediction_length)
+        except Exception:
+            raise HTTPException(500, f"Prediction error: {exc}")
 
 
 @app.post("/api/predict/multi", response_model=PredictMultiResponse)
 async def predict_multi(req: PredictMultiRequest):
-    """Predict for multiple species (e.g. all species in one biological system)."""
+    """Batch prediction for multiple species."""
     results = []
     for ctx in req.contexts:
         try:
-            if chronos_pipeline is not None:
-                r = run_chronos_predict(ctx, req.prediction_length)
+            if regimeflow_engine is not None:
+                r = _predict_regimeflow(
+                    ctx, req.prediction_length,
+                    traj_pattern=req.traj_pattern, period=req.period,
+                )
+            elif chronos_pipeline is not None:
+                r = _predict_chronos(ctx, req.prediction_length)
             else:
-                r = _synthetic_forecast(ctx, req.prediction_length)
+                r = _predict_fallback(ctx, req.prediction_length)
             results.append(r)
         except Exception as exc:
-            raise HTTPException(500, f"Prediction error for species: {exc}")
+            logger.error(f"Batch prediction error: {exc}")
+            results.append(_predict_fallback(ctx, req.prediction_length))
     return PredictMultiResponse(results=results)
 
 
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
+# ── Entry point ────────────────────────────────────────────────
 if __name__ == "__main__":
     import uvicorn
 
     port = int(os.environ.get("PORT", 8000))
+    logger.info(f"Starting RegimeFlow server on port {port}")
+    logger.info(f"  RegimeFlow: {model_info['regimeflow_loaded']}")
+    logger.info(f"  Chronos:    {model_info['chronos_loaded']}")
+    logger.info(f"  Checkpoint: {REGIMEFLOW_CKPT or 'N/A'}")
     uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")

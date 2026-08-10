@@ -730,8 +730,9 @@ function initBubbleChart(models, mode) {
     pageModels.forEach(function(m) {
       var l1 = REGIME_TO_L1[m.regime] || 'stable';
       var year = extractYear(m.name);
+      var cardDisplay = getShortName(m) || getDisplayName(m) || (m.name || '');
       html += '<div class="model-card" data-id="' + m.id + '">' +
-        '<div class="mc-name">' + (m.name || '') + '</div>' +
+        '<div class="mc-name" title="' + (m.name||'') + '">' + cardDisplay + '</div>' +
         '<div class="mc-meta">🧬 Species: <b>' + (m.species || '?') + '</b></div>' +
         '<div class="mc-tags">' +
           '<span class="mc-tag ' + (regimeColorClass[l1] || '') + '">' + (regimeLabelMap[l1] || l1) + '</span>' +

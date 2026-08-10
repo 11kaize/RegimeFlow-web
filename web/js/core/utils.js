@@ -88,3 +88,56 @@ function escapeHtml(str) {
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
 }
+
+// ── Model Display Name Helpers ──────────────────────────────────
+// Uses MODEL_DISPLAY_NAMES (from model-display-names.js) if loaded.
+// Falls back to the original AuthorYear name when unavailable.
+
+function getDisplayName(model) {
+  if (!model) return '';
+  if (typeof MODEL_DISPLAY_NAMES !== 'undefined' && MODEL_DISPLAY_NAMES[model.id]) {
+    return MODEL_DISPLAY_NAMES[model.id];
+  }
+  return model.name || '';
+}
+
+// Extract just the biological description, dropping "AuthorYear - " prefix
+function getShortName(model) {
+  if (!model) return '';
+  var full = getDisplayName(model);
+  if (!full) return model.name || '';
+
+  // Pattern 1: "AuthorYear - Description"
+  var dashMatch = full.match(/^[A-Za-z][A-Za-z0-9]*\s*\d{4}\s*[-–—]\s*(.+)$/);
+  if (dashMatch) return dashMatch[1];
+
+  // Pattern 2: "AuthorYear_Description_Here" → "Description Here"
+  var usMatch = full.match(/^[A-Za-z][A-Za-z0-9]*\d{4}[_]\s*(.+)$/);
+  if (usMatch) {
+    return usMatch[1]
+      .replace(/_/g, ' ')
+      .replace(/([a-z])([A-Z])/g, '$1 $2')
+      .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2');
+  }
+
+  // Pattern 3: "author-year description" → capitalize
+  if (/^[a-z]/.test(full)) {
+    var cleaned = full.replace(/^[a-z][a-z0-9]*-[a-z][a-z0-9]*\s+/, '');
+    if (cleaned !== full) return cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
+    return full.charAt(0).toUpperCase() + full.slice(1);
+  }
+
+  // Pattern 4: "AuthorYearCamelDescription" → split camelCase
+  var camelMatch = full.match(/^[A-Za-z]+\d{4}([A-Z].+)$/);
+  if (camelMatch) return camelMatch[1].replace(/([a-z])([A-Z])/g, '$1 $2');
+
+  return full;
+}
+
+// Short name with length cap for tight spaces (bubble labels etc.)
+function getLabelName(model, maxLen) {
+  maxLen = maxLen || 30;
+  var name = getShortName(model) || getDisplayName(model);
+  if (name.length > maxLen) name = name.substring(0, maxLen - 2) + '…';
+  return name;
+}
