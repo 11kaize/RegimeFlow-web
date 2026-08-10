@@ -229,10 +229,21 @@ function correctBPRadii(root) {
     } else if (children.length === 1) {
       children[0].x = 0;
       children[0].y = 0;
-      // Tighten parent around single child
-      var idealR = Math.max(minR, children[0].r * 1.18);
-      if (idealR < cat.r) cat.r = idealR;
+      // Ensure parent has a clickable ring around the single child
+      // (must be strictly larger so the parent circle is reachable by click)
+      var idealR = Math.max(minR, children[0].r * 1.30);
+      cat.r = Math.max(cat.r, idealR);
     }
+
+    // Sanity check: ensure parent radius exceeds the extent of all children
+    // so a clickable ring is always visible (critical for small-n categories)
+    var childExtent = 0;
+    children.forEach(function(ch) {
+      var dist = Math.sqrt(ch.x * ch.x + ch.y * ch.y) + ch.r;
+      if (dist > childExtent) childExtent = dist;
+    });
+    var minClickableR = Math.max(minR, childExtent * 1.18);
+    if (cat.r < minClickableR) cat.r = minClickableR;
 
     // Offset children to parent center
     children.forEach(function(ch) {
