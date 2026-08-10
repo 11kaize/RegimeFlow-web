@@ -73,15 +73,29 @@ def _ensure_checkpoint():
         REGIMEFLOW_CKPT = str(dest)
         return
 
-    # Search local filesystem
-    candidates = [
-        _PROJECT_ROOT / "ckpt" / "RegimeFlow" / "seed53_best.ckpt",
-        _PROJECT_ROOT / "seed53_best.ckpt",
-    ]
+    # Search local filesystem — try multiple base paths (Render vs local)
+    cwd = Path.cwd()
+    search_bases = [_PROJECT_ROOT]
+    if cwd != _PROJECT_ROOT:
+        search_bases.append(cwd)
+
+    candidates = []
+    for base in search_bases:
+        candidates.extend([
+            base / "ckpt" / "RegimeFlow" / "seed53_best.ckpt",
+            base / "seed53_best.ckpt",
+            base / "web" / "backend" / "ckpt" / "RegimeFlow" / "seed53_best.ckpt",
+        ])
+
+    logger.info(f"Searching checkpoint: _PROJECT_ROOT={_PROJECT_ROOT}, cwd={cwd}")
     for c in candidates:
+        logger.info(f"  Checking: {c} (exists={c.exists()})")
         if c.exists():
             REGIMEFLOW_CKPT = str(c)
+            logger.info(f"Found checkpoint at {REGIMEFLOW_CKPT}")
             return
+
+    logger.warning(f"Checkpoint not found in any of {len(candidates)} candidate paths")
 
 if LOAD_REGIMEFLOW:
     _ensure_checkpoint()
