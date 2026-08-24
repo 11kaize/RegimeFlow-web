@@ -695,18 +695,53 @@ function attemptPrediction(ctxData, ctxTime, gtTime, gtData, spName, modelName, 
     period: period
   };
 
-  fetch(API_BASE + '/api/predict', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(reqBody)
-  }).then(function(r) {
-    if (!r.ok) throw new Error('API error');
-    return r.json();
-  }).then(function(result) {
-    drawChart(ctxTime, ctxData, gtTime, gtData, result, spName, modelName);
-  }).catch(function() {
-    drawChart(ctxTime, ctxData, gtTime, gtData, { _pending: true }, spName, modelName);
-  });
+  // Render free tier sleeps after ~15 min idle; the next request triggers a cold
+  // start (10–30s to reload the 36MB ONNX model). Retry a few times so the
+  // prediction line appears as soon as the backend is ready, rather than giving
+  // up straight to the "pending" placeholder on a cold start.
+  var attempts = 0;
+  var MAX_ATTEMPTS = 8;        // ~8 retries × (fetch + 3s delay) ≈ ~50s budget
+  var RETRY_DELAY_MS = 3000;
+
+  function tryPredict() {
+    fetch(API_BASE + '/api/predict', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(reqBody)
+    }).then(function(r) {
+      if (!r.ok) throw new Error('API error');
+      return r.json();
+    }).then(function(result) {
+      setBackendWaking(false);
+      drawChart(ctxTime, ctxData, gtTime, gtData, result, spName, modelName);
+    }).catch(function() {
+      attempts++;
+      if (attempts < MAX_ATTEMPTS) {
+        setBackendWaking(true);
+        setTimeout(tryPredict, RETRY_DELAY_MS);
+      } else {
+        setBackendWaking(false);
+        drawChart(ctxTime, ctxData, gtTime, gtData, { _pending: true }, spName, modelName);
+      }
+    });
+  }
+
+  tryPredict();
+}
+
+// Show/hide a "waking backend" hint while the prediction retries through a cold
+// start. Clears back to the normal backend status once done.
+function setBackendWaking(waking) {
+  var noteEl = document.querySelector('.sidebar-note');
+  if (!noteEl) return;
+  if (waking) {
+    noteEl.innerHTML = '⏳ Waking prediction backend…<br><span style="font-size:10px;color:#8899aa;">Loading model (10–30s)</span>';
+    noteEl.style.background = 'var(--color-tag-yellow, #1a1a0a)';
+    noteEl.style.borderColor = '#332e15';
+    noteEl.style.color = '#998844';
+  } else {
+    updateSidebarNote();
+  }
 }
 
 // ================================================================
