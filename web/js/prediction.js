@@ -297,8 +297,11 @@ function renderCategoryComparison() {
     if (seq !== _catCompareState.seq) return;
     if (cursor >= models.length) return;
     var m = models[cursor++];
-    var csvUrl = 'https://huggingface.co/datasets/HengRao/SysBio-Traj/resolve/main/Data/'
-      + m.id + '/' + m.name + '.csv';
+    // Fetch via the backend CSV proxy — Render → HuggingFace is fast (both US),
+    // the proxy has a 30s timeout, and it 404s quickly for models with no data.
+    // Direct browser → HF has no timeout and hangs from e.g. China, which made
+    // this comparison loop appear to freeze when a model had no CSV.
+    var csvUrl = API_BASE + '/api/csv/' + encodeURIComponent(m.id) + '/' + encodeURIComponent(m.name);
     fetch(csvUrl).then(function(r) {
       if (!r.ok) throw new Error('HTTP ' + r.status);
       return r.text();
