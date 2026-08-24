@@ -817,39 +817,49 @@ function renderAllSpecies() {
   // Draw actual (ground truth) lines immediately; predictions fill in async
   drawAllSpeciesChart(shown, ctxTime, speciesCtx, speciesGt, gtTime, {}, displayName, truncated, spNames.length);
 
-  // Fire predictions for every species in parallel
-  var predictions = {};
-  var pending = shown.length;
-  function done() {
-    pending--;
-    if (pending === 0) {
-      drawAllSpeciesChart(shown, ctxTime, speciesCtx, speciesGt, gtTime, predictions, displayName, truncated, spNames.length);
-    }
-  }
-  shown.forEach(function(sp) {
-    var ctxData = speciesCtx[sp];
-    var gtLen   = (speciesGt[sp] || []).length;
-    var reqBody = {
-      context: ctxData,
-      prediction_length: Math.min(256, gtLen),
-      traj_pattern: REGIME_TO_PATTERN[model.regime] || 0,
-      period: (model.regime === 'oscillation') ? 12.5 : 0.0
-    };
-    fetch(API_BASE + '/api/predict', {
+  // Batch all species into a single /api/predict/multi request.
+  // The old code fired one /api/predict per species (up to MAX_OVERLAY_SPECIES
+  // concurrent ONNX inferences). On the free-tier 1-vCPU instance that caused
+  // heavy thread contention and made every request slow. One batched request
+  // runs the inferences sequentially on the server — no contention, one round
+  // trip — and returns all predictions together.
+  var pattern = REGIME_TO_PATTERN[model.regime] || 0;
+  var period  = (model.regime === 'oscillation') ? 12.5 : 0.0;
+  var predLen = Math.min(256, time.length - ctxLen);
+  var reqBody = {
+    contexts: shown.map(function(sp) { return speciesCtx[sp]; }),
+    prediction_length: predLen,
+    traj_pattern: pattern,
+    period: period
+  };
+
+  var attempts = 0;
+  var MAX_ATTEMPTS = 3;          // cover a rare cold start after idle
+  var RETRY_DELAY_MS = 3000;
+  function tryMulti() {
+    fetch(API_BASE + '/api/predict/multi', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(reqBody)
     }).then(function(r) {
       if (!r.ok) throw new Error('HTTP ' + r.status);
       return r.json();
-    }).then(function(result) {
-      predictions[sp] = result.predictions || [];
-      done();
+    }).then(function(resp) {
+      var predictions = {};
+      (resp.results || []).forEach(function(res, i) {
+        predictions[shown[i]] = (res && res.predictions) || [];
+      });
+      drawAllSpeciesChart(shown, ctxTime, speciesCtx, speciesGt, gtTime, predictions, displayName, truncated, spNames.length);
     }).catch(function() {
-      predictions[sp] = null;
-      done();
+      attempts++;
+      if (attempts < MAX_ATTEMPTS) {
+        setTimeout(tryMulti, RETRY_DELAY_MS);
+      } else {
+        drawAllSpeciesChart(shown, ctxTime, speciesCtx, speciesGt, gtTime, {}, displayName, truncated, spNames.length);
+      }
     });
-  });
+  }
+  tryMulti();
 }
 
 function drawAllSpeciesChart(spNames, ctxTime, speciesCtx, speciesGt, gtTime, predictions, sysName, truncated, totalCount) {
