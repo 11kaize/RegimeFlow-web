@@ -222,9 +222,15 @@ class RegimeFlowEngineONNX:
         self.cond_dim = hp.get('cond_dim', 128)
 
         # ── Load ONNX models ──
+        # Disable graph optimization: on this 36MB Mamba backbone, ORT_ENABLE_ALL
+        # spends ~6.5s fusing/rewriting the graph at load time with zero inference
+        # gain (measured ~identical step time with it off). On Render's free tier
+        # every cold start re-runs this load, so this is ~4x faster startup.
         logger.info(f"Loading ONNX backbone from {backbone_onnx} ...")
+        _so = ort.SessionOptions()
+        _so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
         self.backbone_session = ort.InferenceSession(
-            backbone_onnx, providers=['CPUExecutionProvider']
+            backbone_onnx, sess_options=_so, providers=['CPUExecutionProvider']
         )
         logger.info(f"Backbone loaded: inputs={[i.name for i in self.backbone_session.get_inputs()]}")
 
