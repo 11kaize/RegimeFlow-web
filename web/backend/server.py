@@ -22,6 +22,7 @@ Environment variables:
 import os
 import sys
 import time
+import threading
 import logging
 from pathlib import Path
 from contextlib import asynccontextmanager
@@ -115,11 +116,34 @@ model_info: dict = {
 # ── Lifespan ───────────────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Load models on startup."""
-    global regimeflow_engine, chronos_pipeline, model_info
+    """Models are loaded lazily on the first /api/predict (see
+    _load_regimeflow_engine) so /api/health and /api/csv answer instantly on a
+    cold start instead of waiting for the ~2s ONNX load at startup."""
+    yield
+    global regimeflow_engine, chronos_pipeline
+    regimeflow_engine = None
+    chronos_pipeline = None
 
-    # 1. Try loading RegimeFlow (ONNX Runtime — no PyTorch needed)
-    if LOAD_REGIMEFLOW and REGIMEFLOW_CKPT:
+
+_engine_lock = threading.Lock()
+
+
+def _load_regimeflow_engine():
+    """Return the RegimeFlow engine, loading it once on first call.
+
+    Thread-safe and idempotent. Kept out of the startup lifespan so a free-tier
+    cold start only pays the model-load cost when a prediction is actually
+    requested — the CSV proxy and /api/health stay fast.
+    """
+    global regimeflow_engine, model_info
+    if regimeflow_engine is not None:
+        return regimeflow_engine
+    with _engine_lock:
+        if regimeflow_engine is not None:
+            return regimeflow_engine
+        if not (LOAD_REGIMEFLOW and REGIMEFLOW_CKPT):
+            logger.info("RegimeFlow disabled (LOAD_REGIMEFLOW=false or no checkpoint found)")
+            return None
         logger.info(f"Loading RegimeFlow ONNX from {REGIMEFLOW_CKPT} ...")
         try:
             from web.backend.engine_onnx import init_engine as init_engine_onnx
@@ -130,38 +154,7 @@ async def lifespan(app: FastAPI):
         except Exception as exc:
             model_info["error"] = f"RegimeFlow: {exc}"
             logger.error(f"Failed to load RegimeFlow ONNX: {exc}")
-    else:
-        logger.info("RegimeFlow disabled (LOAD_REGIMEFLOW=false or no checkpoint found)")
-
-    # 2. Optionally load Chronos-Bolt
-    if LOAD_CHRONOS:
-        logger.info("Loading Chronos-Bolt-Base from HuggingFace ...")
-        try:
-            import torch as _torch
-            from chronos import BaseChronosPipeline
-
-            device = "cuda" if _torch.cuda.is_available() else "cpu"
-            model_info["device"] = device
-            chronos_pipeline = BaseChronosPipeline.from_pretrained(
-                "amazon/chronos-bolt-base",
-                device_map=device,
-                torch_dtype=_torch.bfloat16 if device == "cuda" else _torch.float32,
-            )
-            model_info["chronos_loaded"] = True
-            logger.info(f"Chronos-Bolt loaded on {device}")
-        except Exception as exc:
-            model_info["error"] = model_info.get("error", "") + f"; Chronos: {exc}"
-            logger.error(f"Failed to load Chronos: {exc}")
-    else:
-        logger.info("Chronos disabled")
-
-    if not model_info["regimeflow_loaded"] and not model_info["chronos_loaded"]:
-        logger.warning("No prediction model loaded — using synthetic fallback")
-
-    yield
-
-    regimeflow_engine = None
-    chronos_pipeline = None
+        return regimeflow_engine
 
 
 # ── FastAPI app ────────────────────────────────────────────────
@@ -384,6 +377,7 @@ async def predict(req: PredictRequest):
 
     try:
         # Priority: RegimeFlow > Chronos > fallback
+        _load_regimeflow_engine()  # lazy-load on the first prediction
         if regimeflow_engine is not None:
             return _predict_regimeflow(
                 req.context, req.prediction_length,
@@ -406,6 +400,7 @@ async def predict(req: PredictRequest):
 async def predict_multi(req: PredictMultiRequest):
     """Batch prediction for multiple species."""
     results = []
+    _load_regimeflow_engine()  # lazy-load on the first prediction
     for ctx in req.contexts:
         try:
             if regimeflow_engine is not None:
@@ -426,7 +421,7 @@ async def predict_multi(req: PredictMultiRequest):
 
 # ── CSV proxy ─────────────────────────────────────────────────
 @app.get("/api/csv/{model_id}/{model_name}")
-async def proxy_csv(model_id: str, model_name: str):
+def proxy_csv(model_id: str, model_name: str):
     """Proxy a SysBio-Traj CSV from HuggingFace.
 
     The frontend used to fetch model trajectories straight from HuggingFace,
