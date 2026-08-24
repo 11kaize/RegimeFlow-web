@@ -359,11 +359,15 @@ function initPrediction() {
     .catch(function() {});
 
   // 预热浏览器推理引擎：后台下载模型（首次 ~43MB，之后走 HTTP 缓存）。
-  // 加载期间点预测会等待；加载失败则预测时自动回退后端。
+  // 下载期间在侧边栏显示实时进度；加载失败则预测时自动回退后端。
   if (window.RegimeFlowWeb) {
+    setModelDownloading(0);
     RegimeFlowWeb.load({
       backbone: _modelUrl(MODEL_URLS.backbone),
       condEncoder: _modelUrl(MODEL_URLS.condEncoder),
+      onProgress: function(received, total) { setModelDownloading(received / total); },
+    }).then(function() {
+      setModelDownloading(null); // 完成/失败 → 恢复侧边栏默认（就绪/后端状态）
     });
   }
 
@@ -717,6 +721,20 @@ function setBackendWaking(waking) {
   } else {
     updateSidebarNote();
   }
+}
+
+// 浏览器模型下载进度（页面加载时主动显示，而非等到点预测才发现）。
+// frac ∈ [0,1] 显示进度；frac === null 表示下载结束（成功或失败），恢复默认。
+function setModelDownloading(frac) {
+  var noteEl = document.querySelector('.sidebar-note');
+  if (!noteEl) return;
+  if (frac === null) { updateSidebarNote(); return; }
+  var pct = Math.max(0, Math.min(100, Math.round(frac * 100)));
+  noteEl.innerHTML = '⏳ Downloading AI model…<br>' +
+    '<span style="font-size:10px;color:#8899aa;">43MB · ' + pct + '% — one-time, cached after</span>';
+  noteEl.style.background = 'var(--color-tag-yellow, #1a1a0a)';
+  noteEl.style.borderColor = '#332e15';
+  noteEl.style.color = '#998844';
 }
 
 // ================================================================
@@ -1157,6 +1175,14 @@ function openModelPrediction(model) {
 function updateSidebarNote() {
   var noteEl = document.querySelector('.sidebar-note');
   if (!noteEl) return;
+  var RF = window.RegimeFlowWeb;
+  if (RF && RF.isLoaded()) {
+    noteEl.innerHTML = '✅ Browser AI ready<br><span style="font-size:10px;">预测在本地运行 · 不占服务器</span>';
+    noteEl.style.background = '#1a2a20';
+    noteEl.style.borderColor = '#2a4a30';
+    noteEl.style.color = '#88aa88';
+    return;
+  }
   if (_backendStatus.regimeflow_loaded) {
     noteEl.innerHTML = '🧠 RegimeFlow ready' +
       '<br><span style="font-size:10px;">' + _backendStatus.device +

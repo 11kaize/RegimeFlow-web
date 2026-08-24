@@ -62,8 +62,17 @@ window.RegimeFlowWeb = (function () {
         }
         // 浏览器用 wasm；Node 侧（onnxruntime-node）交叉验证时传 ['cpu']
         var sessionOpts = { executionProviders: opts.executionProviders || ['wasm'] };
-        _sessions.condEncoder = await ort.InferenceSession.create(modelUrls.condEncoder, sessionOpts);
-        _sessions.backbone = await ort.InferenceSession.create(modelUrls.backbone, sessionOpts);
+        if (opts.onProgress) {
+          // 浏览器侧：先 fetch 成 ArrayBuffer 再建 session，以便 UI 显示
+          // 43MB 模型的实时下载进度（onnxruntime 内部 fetch 不暴露进度）。
+          var condBuf = await _fetchBuffer(modelUrls.condEncoder, null);
+          _sessions.condEncoder = await ort.InferenceSession.create(condBuf, sessionOpts);
+          var bbBuf = await _fetchBuffer(modelUrls.backbone, opts.onProgress);
+          _sessions.backbone = await ort.InferenceSession.create(bbBuf, sessionOpts);
+        } else {
+          _sessions.condEncoder = await ort.InferenceSession.create(modelUrls.condEncoder, sessionOpts);
+          _sessions.backbone = await ort.InferenceSession.create(modelUrls.backbone, sessionOpts);
+        }
         _error = null;
         return true;
       } catch (e) {
@@ -73,6 +82,27 @@ window.RegimeFlowWeb = (function () {
       }
     })();
     return _loading;
+  }
+
+  // 下载 URL → ArrayBuffer；可选 onProgress(receivedBytes, totalBytes)。
+  async function _fetchBuffer(url, onProgress) {
+    var resp = await fetch(url);
+    if (!resp.ok) throw new Error('HTTP ' + resp.status + ' for ' + url);
+    var total = Number(resp.headers.get('Content-Length')) || 0;
+    if (!resp.body || !onProgress || !total) return resp.arrayBuffer();
+    var reader = resp.body.getReader();
+    var received = 0, chunks = [];
+    for (;;) {
+      var r = await reader.read();
+      if (r.done) break;
+      chunks.push(r.value);
+      received += r.value.length;
+      onProgress(received, total);
+    }
+    var buf = new Uint8Array(received);
+    var off = 0;
+    for (var i = 0; i < chunks.length; i++) { buf.set(chunks[i], off); off += chunks[i].length; }
+    return buf.buffer;
   }
 
   function isLoaded() { return !!_sessions.backbone && !!_sessions.condEncoder; }
