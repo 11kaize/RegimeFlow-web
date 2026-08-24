@@ -24,6 +24,7 @@ import sys
 import time
 import threading
 import logging
+import json
 from pathlib import Path
 from contextlib import asynccontextmanager
 from typing import Optional
@@ -32,7 +33,7 @@ import numpy as np
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 # Add project root for model imports
@@ -178,6 +179,7 @@ static_dir = Path(__file__).parent.parent
 app.mount("/css", StaticFiles(directory=str(static_dir / "css")), name="css")
 app.mount("/js", StaticFiles(directory=str(static_dir / "js")), name="js")
 app.mount("/data", StaticFiles(directory=str(static_dir / "data")), name="data")
+app.mount("/models", StaticFiles(directory=str(static_dir / "models")), name="models")
 
 
 @app.get("/")
@@ -417,6 +419,37 @@ async def predict_multi(req: PredictMultiRequest):
             logger.error(f"Batch prediction error: {exc}")
             results.append(_predict_fallback(ctx, req.prediction_length))
     return PredictMultiResponse(results=results)
+
+
+@app.post("/api/predict/multi/stream")
+def predict_multi_stream(req: PredictMultiRequest):
+    """Stream batch predictions as newline-delimited JSON.
+
+    Each species is predicted sequentially (no thread contention on the free-tier
+    CPU) and yielded as soon as it is ready, so the frontend can draw prediction
+    lines one-by-one instead of waiting for the slowest species and showing a
+    blank chart for the whole batch.
+    """
+    _load_regimeflow_engine()  # lazy-load on the first prediction
+
+    def _iter():
+        for i, ctx in enumerate(req.contexts):
+            try:
+                if regimeflow_engine is not None:
+                    r = _predict_regimeflow(
+                        ctx, req.prediction_length,
+                        traj_pattern=req.traj_pattern, period=req.period,
+                    )
+                elif chronos_pipeline is not None:
+                    r = _predict_chronos(ctx, req.prediction_length)
+                else:
+                    r = _predict_fallback(ctx, req.prediction_length)
+            except Exception as exc:
+                logger.error(f"Stream prediction error for species {i}: {exc}")
+                r = _predict_fallback(ctx, req.prediction_length)
+            yield json.dumps({"index": i, "result": r.model_dump()}) + "\n"
+
+    return StreamingResponse(_iter(), media_type="application/x-ndjson")
 
 
 # ── CSV proxy ─────────────────────────────────────────────────

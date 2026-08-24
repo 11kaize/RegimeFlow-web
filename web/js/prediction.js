@@ -26,6 +26,52 @@ var API_BASE = (function() {
   return 'http://localhost:8000';
 })();
 
+// ── Browser-side inference engine ──────────────────────────────
+// RegimeFlow 浏览器推理：优先在访问者机器上跑 ONNX（不占后端 CPU），
+// 引擎不可用（onnxruntime-web 缺失 / 模型 404）时回退到后端 /api/predict。
+// 模型 URL 指向「合并单文件」ONNX（外置 .data 已内联进 .onnx）。
+var MODEL_URLS = {
+  backbone:    '/models/backbone.onnx',      // 43MB
+  condEncoder: '/models/cond_encoder.onnx',  // 400KB
+};
+
+// 相对路径 → 绝对（file:// 打开时走 localhost:8000；同源部署保持相对）
+function _modelUrl(p) {
+  if (/^https?:\/\//.test(p)) return p;
+  return API_BASE + p;
+}
+
+// 后端单物种预测（回退路径），返回 Promise<number[]>
+function backendPredict(context, pattern, period, predLen) {
+  var body = { context: context, prediction_length: predLen || 256 };
+  if (pattern !== undefined) body.traj_pattern = pattern;
+  if (period !== undefined) body.period = period;
+  return fetch(API_BASE + '/api/predict', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  }).then(function(r) {
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    return r.json();
+  }).then(function(resp) { return resp.predictions; });
+}
+
+// 预测一个上下文序列 → Promise<number[]>。浏览器推理优先，失败回退后端。
+function getPrediction(context, pattern, period, predLen) {
+  if (pattern === undefined) pattern = 0;
+  if (period === undefined) period = 0;
+  var RF = window.RegimeFlowWeb;
+  if (RF) {
+    return RF.ready().then(function(ok) {
+      if (ok) return RF.predict(context, pattern, period);
+      throw new Error(RF.getError() || 'browser engine unavailable');
+    }).catch(function() {
+      return backendPredict(context, pattern, period, predLen);
+    });
+  }
+  return backendPredict(context, pattern, period, predLen);
+}
+
 // ── State ──────────────────────────────────────────────────────
 var _pwState = {
   modelIdx:      -1,      // selected model index within currentModelList, -1 = none
@@ -52,7 +98,7 @@ var _activeViewMode = 'pathway';  // 'pathway' | 'compare' — which view curren
 
 // Multi-species overlay palette + cap (one colour per species)
 var SPECIES_COLORS = ['#4A90D9','#F39C12','#2ECC71','#E74C3C','#9B59B6','#1ABC9C','#F1C40F','#E67E22','#3498DB','#E84393','#00CEC9','#A29BFE','#55EFC4','#FD79A8','#6C5CE7','#FF7675'];
-var MAX_OVERLAY_SPECIES = 15;
+var MAX_OVERLAY_SPECIES = 8;
 
 // ================================================================
 // ChartError — clean error-state overlay for the prediction chart
@@ -251,81 +297,21 @@ function renderCategoryComparison() {
 
   _activeViewMode = 'compare';
 
-  // Loading state
+  // Load-on-demand: don't fetch/plot every model's CSV as soon as a category is
+  // picked — that auto-load was slow on the free tier (dozens of CSV proxies at
+  // once). Just prompt; a model's trajectory is fetched only when the user
+  // clicks that model in the list.
   window._predictChart.setOption({
     backgroundColor: 'transparent',
-    title: { text: categoryLabel(), subtext: 'Loading ' + models.length + ' models…', left: 'center', top: '38%',
-      textStyle: { color: '#e0e6ed', fontSize: 16 }, subtextStyle: { color: '#F39C12', fontSize: 12 } },
+    title: {
+      text: categoryLabel(),
+      subtext: models.length + ' models · select one from the list to view its trajectory',
+      left: 'center', top: '38%',
+      textStyle: { color: '#e0e6ed', fontSize: 16 },
+      subtextStyle: { color: '#6a8299', fontSize: 12 }
+    },
     xAxis: { show: false }, yAxis: { show: false }, series: []
   }, true);
-
-  var collected = [];
-  var cursor = 0;
-  var CONCURRENCY = 8;
-
-  function renderSoFar() {
-    if (seq !== _catCompareState.seq) return;
-    var series = collected.map(function(c) {
-      return {
-        name: c.shortName,
-        type: 'line',
-        data: c.time.map(function(t, i) { return [t, c.data[i]]; }),
-        lineStyle: { color: c.color, width: 1.2 },
-        itemStyle: { color: c.color },
-        symbol: 'none', smooth: true
-      };
-    });
-    window._predictChart.setOption({
-      backgroundColor: 'transparent',
-      animationDuration: 200,
-      animationEasing: 'cubicOut',
-      title: { text: categoryLabel(), subtext: collected.length + ' / ' + models.length + ' models', left: 'center', top: 8,
-        textStyle: { color: '#e0e6ed', fontSize: 16 }, subtextStyle: { color: '#6a8299', fontSize: 11 } },
-      tooltip: { trigger: 'axis', backgroundColor: '#1a2a3a', borderColor: '#2a4057', textStyle: { color: '#e0e6ed', fontSize: 12 } },
-      legend: { type: 'scroll', orient: 'horizontal', bottom: 10, left: 5, right: 5, itemWidth: 10, itemHeight: 10,
-        icon: 'circle', textStyle: { color: '#8899aa', fontSize: 10 } },
-      grid: { left: 55, right: 30, top: 70, bottom: 55 },
-      xAxis: { type: 'value', axisLine: { lineStyle: { color: '#2a4057' } }, axisLabel: { color: '#6a8299', fontSize: 10 },
-        splitLine: { lineStyle: { color: '#1a2a3a' } } },
-      yAxis: { type: 'value', axisLine: { lineStyle: { color: '#2a4057' } }, axisLabel: { color: '#6a8299', fontSize: 10 },
-        splitLine: { lineStyle: { color: '#1a2a3a' } } },
-      series: series
-    }, true);
-  }
-
-  function loadNext() {
-    if (seq !== _catCompareState.seq) return;
-    if (cursor >= models.length) return;
-    var m = models[cursor++];
-    // Fetch via the backend CSV proxy — Render → HuggingFace is fast (both US),
-    // the proxy has a 30s timeout, and it 404s quickly for models with no data.
-    // Direct browser → HF has no timeout and hangs from e.g. China, which made
-    // this comparison loop appear to freeze when a model had no CSV.
-    var csvUrl = API_BASE + '/api/csv/' + encodeURIComponent(m.id) + '/' + encodeURIComponent(m.name);
-    fetch(csvUrl).then(function(r) {
-      if (!r.ok) throw new Error('HTTP ' + r.status);
-      return r.text();
-    }).then(function(text) {
-      if (seq !== _catCompareState.seq) return;
-      var parsed = parseCsv(text);
-      var rep = pickRepresentativeSpecies(parsed);
-      if (rep.data.length) {
-        collected.push({
-          shortName: getLabelName(m, 28),
-          color: CAT_REGIME_COLOR[m.regime] || '#8899aa',
-          time: rep.time,
-          data: rep.data
-        });
-        renderSoFar();
-      }
-      loadNext();
-    }).catch(function() {
-      if (seq !== _catCompareState.seq) return;
-      loadNext();
-    });
-  }
-
-  for (var c = 0; c < CONCURRENCY; c++) loadNext();
 }
 
 // Show the "back to list" button only while viewing a single model.
@@ -371,6 +357,15 @@ function initPrediction() {
   fetch(API_BASE + '/api/health').then(function(r) { return r.json(); })
     .then(function(s) { _backendStatus = s; updateSidebarNote(); })
     .catch(function() {});
+
+  // 预热浏览器推理引擎：后台下载模型（首次 ~43MB，之后走 HTTP 缓存）。
+  // 加载期间点预测会等待；加载失败则预测时自动回退后端。
+  if (window.RegimeFlowWeb) {
+    RegimeFlowWeb.load({
+      backbone: _modelUrl(MODEL_URLS.backbone),
+      condEncoder: _modelUrl(MODEL_URLS.condEncoder),
+    });
+  }
 
   // ── Dimension toggle + single dropdown + model list ──
   var filterEl = document.getElementById('category-filter');
@@ -621,12 +616,14 @@ function loadPathwayTrajectory(model) {
     markModelOk(_pwState.modelIdx);
     ChartError.clear();
 
-    // Populate species selector (with "All species" overlay option)
+    // Populate species selector — default to the first species (single view).
+    // Prediction is on-demand: a model loads its CSV quickly and only runs
+    // inference for the one species the user picks, not all species at once.
     var selEl = document.getElementById('species-select');
     if (selEl) {
-      selEl.innerHTML = '<option value="-1" selected>— All species —</option>' +
+      selEl.innerHTML = '<option value="-1">— All species —</option>' +
         spNames.map(function(n, i) {
-          return '<option value="' + i + '">' + n + '</option>';
+          return '<option value="' + i + '"' + (i === 0 ? ' selected' : '') + '>' + n + '</option>';
         }).join('');
     }
 
@@ -642,12 +639,12 @@ function loadPathwayTrajectory(model) {
       noteEl.style.color = '#88aa88';
     }
 
-    // Ensure skeleton shows for at least _skelMinMs, then render all species overlaid
+    // Ensure skeleton shows for at least _skelMinMs, then render a single species
     ChartSkeleton.ensureMin(function() {
       ChartSkeleton.hide();  // fade out skeleton
       // Small delay so fade starts before chart renders
       setTimeout(function() {
-        renderAllSpecies();
+        redrawPathwayChart();
       }, 100);
     });
 
@@ -692,55 +689,28 @@ function attemptPrediction(ctxData, ctxTime, gtTime, gtData, spName, modelName, 
   // Determine regime conditions from model metadata
   var pattern = REGIME_TO_PATTERN[modelRegime] || 0;
   var period = (modelRegime === 'oscillation') ? 12.5 : 0.0;
+  var predLen = Math.min(256, gtData.length);
 
-  var reqBody = {
-    context: ctxData,
-    prediction_length: Math.min(256, gtData.length),
-    traj_pattern: pattern,
-    period: period
-  };
+  // 浏览器模型还在下载时给个加载提示
+  var RF = window.RegimeFlowWeb;
+  if (RF && !RF.isLoaded() && !RF.getError()) setBackendWaking(true);
 
-  // Render free tier sleeps after ~15 min idle; the next request triggers a cold
-  // start (10–30s to reload the 36MB ONNX model). Retry a few times so the
-  // prediction line appears as soon as the backend is ready, rather than giving
-  // up straight to the "pending" placeholder on a cold start.
-  var attempts = 0;
-  var MAX_ATTEMPTS = 8;        // ~8 retries × (fetch + 3s delay) ≈ ~50s budget
-  var RETRY_DELAY_MS = 3000;
-
-  function tryPredict() {
-    fetch(API_BASE + '/api/predict', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(reqBody)
-    }).then(function(r) {
-      if (!r.ok) throw new Error('API error');
-      return r.json();
-    }).then(function(result) {
-      setBackendWaking(false);
-      drawChart(ctxTime, ctxData, gtTime, gtData, result, spName, modelName);
-    }).catch(function() {
-      attempts++;
-      if (attempts < MAX_ATTEMPTS) {
-        setBackendWaking(true);
-        setTimeout(tryPredict, RETRY_DELAY_MS);
-      } else {
-        setBackendWaking(false);
-        drawChart(ctxTime, ctxData, gtTime, gtData, { _pending: true }, spName, modelName);
-      }
-    });
-  }
-
-  tryPredict();
+  getPrediction(ctxData, pattern, period, predLen).then(function(pred) {
+    setBackendWaking(false);
+    drawChart(ctxTime, ctxData, gtTime, gtData, { predictions: pred }, spName, modelName);
+  }).catch(function() {
+    setBackendWaking(false);
+    drawChart(ctxTime, ctxData, gtTime, gtData, { _pending: true }, spName, modelName);
+  });
 }
 
-// Show/hide a "waking backend" hint while the prediction retries through a cold
-// start. Clears back to the normal backend status once done.
+// Show/hide a "loading model" hint while the browser engine downloads the ONNX
+// (or the backend cold-starts as a fallback). Clears back once done.
 function setBackendWaking(waking) {
   var noteEl = document.querySelector('.sidebar-note');
   if (!noteEl) return;
   if (waking) {
-    noteEl.innerHTML = '⏳ Waking prediction backend…<br><span style="font-size:10px;color:#8899aa;">Loading model (10–30s)</span>';
+    noteEl.innerHTML = '⏳ Loading AI model…<br><span style="font-size:10px;color:#8899aa;">One-time download (cached after)</span>';
     noteEl.style.background = 'var(--color-tag-yellow, #1a1a0a)';
     noteEl.style.borderColor = '#332e15';
     noteEl.style.color = '#998844';
@@ -820,49 +790,33 @@ function renderAllSpecies() {
   // Draw actual (ground truth) lines immediately; predictions fill in async
   drawAllSpeciesChart(shown, ctxTime, speciesCtx, speciesGt, gtTime, {}, displayName, truncated, spNames.length);
 
-  // Batch all species into a single /api/predict/multi request.
-  // The old code fired one /api/predict per species (up to MAX_OVERLAY_SPECIES
-  // concurrent ONNX inferences). On the free-tier 1-vCPU instance that caused
-  // heavy thread contention and made every request slow. One batched request
-  // runs the inferences sequentially on the server — no contention, one round
-  // trip — and returns all predictions together.
+  // Predict each species sequentially, drawing each line as it completes
+  // (progressive). 浏览器推理优先（引擎已在 initPrediction 预热）；引擎不可用
+  // 时逐物种回退后端 /api/predict。顺序执行避免免费层 CPU 多路并发互踩。
   var pattern = REGIME_TO_PATTERN[model.regime] || 0;
   var period  = (model.regime === 'oscillation') ? 12.5 : 0.0;
   var predLen = Math.min(256, time.length - ctxLen);
-  var reqBody = {
-    contexts: shown.map(function(sp) { return speciesCtx[sp]; }),
-    prediction_length: predLen,
-    traj_pattern: pattern,
-    period: period
-  };
 
-  var attempts = 0;
-  var MAX_ATTEMPTS = 3;          // cover a rare cold start after idle
-  var RETRY_DELAY_MS = 3000;
-  function tryMulti() {
-    fetch(API_BASE + '/api/predict/multi', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(reqBody)
-    }).then(function(r) {
-      if (!r.ok) throw new Error('HTTP ' + r.status);
-      return r.json();
-    }).then(function(resp) {
-      var predictions = {};
-      (resp.results || []).forEach(function(res, i) {
-        predictions[shown[i]] = (res && res.predictions) || [];
-      });
-      drawAllSpeciesChart(shown, ctxTime, speciesCtx, speciesGt, gtTime, predictions, displayName, truncated, spNames.length);
+  var predictions = {};   // filled progressively as each species completes
+  function drawProgress() {
+    drawAllSpeciesChart(shown, ctxTime, speciesCtx, speciesGt, gtTime, predictions, displayName, truncated, spNames.length);
+  }
+
+  var spIdx2 = 0;
+  function nextSpecies() {
+    if (spIdx2 >= shown.length) return;
+    var sp = shown[spIdx2];
+    getPrediction(speciesCtx[sp], pattern, period, predLen).then(function(pred) {
+      predictions[sp] = pred;
+      drawProgress();
+      spIdx2++;
+      nextSpecies();
     }).catch(function() {
-      attempts++;
-      if (attempts < MAX_ATTEMPTS) {
-        setTimeout(tryMulti, RETRY_DELAY_MS);
-      } else {
-        drawAllSpeciesChart(shown, ctxTime, speciesCtx, speciesGt, gtTime, {}, displayName, truncated, spNames.length);
-      }
+      spIdx2++;
+      nextSpecies();
     });
   }
-  tryMulti();
+  nextSpecies();
 }
 
 function drawAllSpeciesChart(spNames, ctxTime, speciesCtx, speciesGt, gtTime, predictions, sysName, truncated, totalCount) {
@@ -1145,15 +1099,8 @@ function handleCustomPredict() {
   }
   drawChart(ctxTime, ctxData, gtTime, gtData, null, 'Custom', 'Custom Data');
 
-  fetch(API_BASE + '/api/predict', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ context: ctxData, prediction_length: Math.min(256, gtData.length) })
-  }).then(function(r) {
-    if (!r.ok) throw new Error('API error');
-    return r.json();
-  }).then(function(result) {
-    drawChart(ctxTime, ctxData, gtTime, gtData, result, 'Custom', 'Custom Data');
+  getPrediction(ctxData, 0, 0, Math.min(256, gtData.length)).then(function(pred) {
+    drawChart(ctxTime, ctxData, gtTime, gtData, { predictions: pred }, 'Custom', 'Custom Data');
     statusEl.textContent = 'Prediction complete';
     statusEl.className = 'custom-status success';
   }).catch(function(e) {
