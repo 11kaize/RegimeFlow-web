@@ -28,7 +28,7 @@ function openDetailPanel(model, mode) {
 
     html +=
       '<div class="dp-header">' +
-        '<div class="dp-name">🧬 ' + escapeHtml(model.name || '') + '</div>' +
+        '<div class="dp-name">🧬 ' + escapeHtml(getDisplayName(model) || model.name || '') + '</div>' +
         '<div class="dp-id">' + escapeHtml(model.id || '') + '</div>' +
       '</div>' +
       '<div class="dp-section">' +
@@ -108,11 +108,7 @@ function openDetailPanel(model, mode) {
     var predictBtn = content.querySelector('.btn-predict');
     if (predictBtn) {
       predictBtn.addEventListener('click', function() {
-        loadBioTrajectory(
-          predictBtn.getAttribute('data-bio-id'),
-          predictBtn.getAttribute('data-bio-name'),
-          parseInt(predictBtn.getAttribute('data-bio-species'), 10)
-        );
+        openModelPrediction(model);
       });
     }
   }

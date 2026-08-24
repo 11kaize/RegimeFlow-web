@@ -6,8 +6,8 @@
 <title>RegimeFlow — Biological Trajectory Forecasting</title>
 <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js"></script>
-<link rel="stylesheet" href="css/style.css?v=12">
-<script src="data/i18n.js?v=4"></script>
+<link rel="stylesheet" href="css/style.css?v=19">
+<script src="data/i18n.js?v=5"></script>
 <script src="data/model-display-names.js?v=1"></script>
 <script src="js/i18n.js?v=4"></script>
 </head>
@@ -78,7 +78,6 @@
   <div id="tax-mode-bar" style="display:flex;justify-content:center;align-items:center;gap:8px;padding:10px 0 4px;">
     <button class="tax-mode-btn active" data-mode="taxonomy">🧬 Taxonomy</button>
     <button class="tax-mode-btn" data-mode="processes">🧪 Biological Processes</button>
-    <span id="bp-avail-hint" class="bp-avail-hint">30 models w/o organism info</span>
   </div>
 
   <div id="taxonomy-hint" style="text-align:center;padding:8px;color:#8899aa;font-size:12px;">
@@ -94,10 +93,17 @@
   <div class="predict-layout">
     <div class="predict-sidebar">
       <div class="input-tabs">
-        <button class="input-tab active" data-tab="examples" data-i18n="predict.tabExamples">Pathway Models</button>
+        <button class="input-tab active" data-tab="models" data-i18n="predict.tabModels">Models</button>
         <button class="input-tab" data-tab="custom" data-i18n="predict.tabCustom">Custom Data</button>
       </div>
-      <div id="system-list"></div>
+      <div id="system-list">
+        <div class="dim-tabs">
+          <button class="dim-tab active" data-dim="taxonomy">🧬 Taxonomy</button>
+          <button class="dim-tab" data-dim="process">🧪 Biological Process</button>
+        </div>
+        <select id="category-filter" class="pw-filter-select" aria-label="Filter models"></select>
+        <div id="pw-model-list"></div>
+      </div>
       <div id="custom-input-panel" style="display:none;">
         <label class="input-label" data-i18n="predict.inputLabel">粘贴时序数据（每行一个值，或 time,value 两列）</label>
         <textarea id="custom-data-input" data-i18n-placeholder="predict.inputPlaceholder" placeholder="例如：&#10;0, 1.2&#10;0.1, 1.5&#10;0.2, 1.8&#10;0.3, 2.1&#10;...&#10;（至少10个数据点）"></textarea>
@@ -108,7 +114,7 @@
         </div>
         <button id="btn-custom-predict" class="btn-predict-custom" data-i18n="predict.btnPredict">🔮 开始预测</button>
         <div class="input-hint">
-          <span data-i18n="predict.inputHint">前 N 个点 = 上下文（蓝色）· 剩余 = 对比基准（灰色虚线）<br>支持 CSV / TSV / 纯数值格式</span>
+          <span data-i18n="predict.inputHint">前 N 个点 = 输入轨迹（蓝色）· 剩余 = 对比基准（灰色虚线）<br>支持 CSV / TSV / 纯数值格式</span>
         </div>
         <div id="custom-status" class="custom-status"></div>
       </div>
@@ -119,15 +125,12 @@
     <div class="predict-main">
       <div id="predict-chart"></div>
       <div class="chart-legend-guide" id="chart-legend-guide" style="display:none;">
-        <span class="legend-item"><span class="legend-swatch" style="background:#4A90D9;"></span> Context (input)</span>
-        <span class="legend-sep">·</span>
-        <span class="legend-item"><span class="legend-swatch" style="background:#6a8299;border-style:dashed;"></span> Ground Truth</span>
+        <span class="legend-item"><span class="legend-swatch" style="background:#6a8299;border-style:dashed;"></span> Actual</span>
         <span class="legend-sep">·</span>
         <span class="legend-item"><span class="legend-swatch" style="background:#F39C12;"></span> Prediction</span>
-        <span class="legend-sep">·</span>
-        <span class="legend-item"><span class="legend-swatch" style="background:rgba(243,156,18,0.25);"></span> Confidence band</span>
       </div>
       <div class="predict-controls">
+        <button id="btn-back-to-list" class="btn-back-list" style="display:none;">← 返回列表</button>
         <label data-i18n="predict.selectSpecies">选择物种:</label>
         <select id="species-select"></select>
         <span class="regime-tag" id="regime-tag"></span>
@@ -151,16 +154,19 @@
   </div>
 </div>
 
+<!-- 全局「返回泡泡图」按钮（在泡泡图视图上自动隐藏） -->
+<button id="btn-back-to-bubbles" class="btn-back-bubbles" style="display:none;">← Back to Home</button>
+
 <script src="js/core/utils.js?v=1"></script>
 <script src="data/regime-mappings.js?v=1"></script>
 <script src="data/pathway-models.js?v=1"></script>
 <script src="data/bio-models.js?v=5"></script>
 <script src="data/bio-domains.js?v=1"></script>
-	<script src="data/bio-processes.js?v=1"></script>
-<script src="js/components/detail-panel.js?v=1"></script>
+	<script src="data/bio-processes.js?v=2"></script>
+<script src="js/components/detail-panel.js?v=3"></script>
 <script src="js/components/skeleton.js?v=1"></script>
-<script src="js/prediction.js?v=12"></script>
-<script src="js/taxonomy-pack.js?v=21"></script>
+<script src="js/prediction.js?v=27"></script>
+<script src="js/taxonomy-pack.js?v=24"></script>
 <script>
 // ---- Taxonomy (default page) ----
 (function() {
@@ -172,17 +178,22 @@
 initPrediction();
 
 // ---- Navigation ----
-document.querySelectorAll('.nav-btn[data-view]').forEach(btn => {
-  btn.addEventListener('click', () => {
-    document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
-    btn.classList.add('active');
-    document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
-    document.getElementById('view-' + btn.dataset.view).classList.add('active');
+function setView(viewName) {
+  document.querySelectorAll('.nav-btn').forEach(b => b.classList.toggle('active', b.dataset.view === viewName));
+  document.querySelectorAll('.view').forEach(v => v.classList.toggle('active', v.id === 'view-' + viewName));
 
-    if (btn.dataset.view === 'taxonomy') setTimeout(function() { resizeTaxonomyPack(); }, 100);
-    if (btn.dataset.view === 'predict') setTimeout(() => window._predictChart && window._predictChart.resize(), 200);
-  });
+  var back = document.getElementById('btn-back-to-bubbles');
+  if (back) back.style.display = (viewName === 'taxonomy') ? 'none' : '';
+
+  if (viewName === 'taxonomy') setTimeout(function() { resizeTaxonomyPack(); }, 100);
+  if (viewName === 'predict') setTimeout(() => window._predictChart && window._predictChart.resize(), 200);
+}
+
+document.querySelectorAll('.nav-btn[data-view]').forEach(btn => {
+  btn.addEventListener('click', () => setView(btn.dataset.view));
 });
+
+document.getElementById('btn-back-to-bubbles').addEventListener('click', () => setView('taxonomy'));
 
 // ---- Modal ----
 document.getElementById('modal-overlay').addEventListener('click', e => {

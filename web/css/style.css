@@ -227,6 +227,22 @@ body { font-family: var(--font-sans); background: var(--color-bg-body); color: v
   cursor: pointer; transition: all var(--duration-normal); white-space: nowrap;
 }
 .btn-back-all:hover { background: rgba(243,156,18,0.22); border-color: var(--color-gold); color: var(--color-gold); }
+.btn-back-list {
+  padding: 7px var(--space-3xl); font-size: 13px; font-weight: 700;
+  color: var(--color-accent); background: rgba(74,144,217,0.12);
+  border: 1px solid rgba(74,144,217,0.35); border-radius: 7px;
+  cursor: pointer; transition: all var(--duration-normal); white-space: nowrap;
+}
+.btn-back-list:hover { background: rgba(74,144,217,0.22); border-color: var(--color-accent); color: var(--color-accent); }
+.btn-back-bubbles {
+  position: fixed; top: 68px; left: 16px; z-index: 60;
+  padding: 8px 16px; font-size: 13px; font-weight: 700;
+  color: var(--color-gold); background: rgba(243,156,18,0.14);
+  border: 1px solid rgba(243,156,18,0.4); border-radius: 8px;
+  cursor: pointer; transition: all var(--duration-normal); white-space: nowrap;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.35);
+}
+.btn-back-bubbles:hover { background: rgba(243,156,18,0.26); border-color: var(--color-gold); color: var(--color-gold); }
 .family-name {
   font-size: 13px; font-weight: 600; color: var(--color-text-highlight);
   white-space: nowrap; letter-spacing: 0.3px;
@@ -342,6 +358,47 @@ body { font-family: var(--font-sans); background: var(--color-bg-body); color: v
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 
+/* Pathway filter dropdown + flat model list */
+.dim-tabs { display: flex; gap: var(--space-xs); margin-bottom: var(--space-md); }
+.dim-tab { flex: 1; background: transparent; border: 1px solid var(--color-border-light); color: var(--color-text-muted); padding: 7px 0; border-radius: var(--radius-md); cursor: pointer; font-size: 12px; transition: all var(--duration-normal); text-align: center; }
+.dim-tab:hover { background: var(--color-bg-hover); color: var(--color-text-highlight); }
+.dim-tab.active { background: var(--color-accent); border-color: var(--color-accent); color: white; }
+
+.pw-filter-select {
+  width: 100%; margin-bottom: var(--space-md);
+  background: var(--color-bg-input); color: var(--color-text);
+  border: 1px solid var(--color-border-light);
+  padding: var(--space-sm) var(--space-md);
+  border-radius: var(--radius-md); font-size: 12px;
+}
+.pw-filter-select:focus { outline: none; border-color: var(--color-accent); }
+.pw-filter-label {
+  display: block; font-size: 11px; font-weight: 700; color: var(--color-text-secondary);
+  text-transform: uppercase; letter-spacing: 0.5px; margin: var(--space-sm) 0 4px;
+}
+.pw-section-title {
+  display: flex; align-items: center; justify-content: space-between;
+  font-size: 11px; font-weight: 700; color: var(--color-text-secondary);
+  text-transform: uppercase; letter-spacing: 0.5px;
+  margin: var(--space-md) 0 6px;
+}
+.pw-section-title .pw-count {
+  font-size: 10px; font-weight: 600; color: var(--color-accent);
+  background: var(--color-tag-blue); padding: 1px 8px; border-radius: var(--radius-pill);
+}
+.pw-divider {
+  border-top: 1px solid var(--color-border);
+  margin: var(--space-md) 0;
+}
+.pw-group-header {
+  font-size: 11px; font-weight: 700; color: var(--color-text-secondary);
+  text-transform: uppercase; letter-spacing: 0.5px;
+  margin: var(--space-md) 0 var(--space-xs);
+  padding-top: var(--space-xs);
+  border-top: 1px solid var(--color-border);
+}
+.pw-total { font-size: 10px; color: var(--color-text-muted); text-align: center; padding: 8px 0; }
+
 @media (max-width: 768px) {
   .pw-model-item { padding: var(--space-md); }
 }
@@ -365,7 +422,7 @@ body { font-family: var(--font-sans); background: var(--color-bg-body); color: v
 .custom-status.error { color: var(--color-red); }
 
 .predict-main { flex: 1; display: flex; flex-direction: column; gap: var(--space-lg); }
-#predict-chart { flex: 1; background: var(--color-bg-surface); border-radius: var(--radius-2xl); border: 1px solid var(--color-border); position: relative; overflow: hidden; }
+#predict-chart { flex: 1; background: var(--color-bg-surface); border-radius: var(--radius-2xl); border: 1px solid var(--color-border); position: relative; overflow: hidden; box-shadow: 0 4px 20px rgba(0,0,0,0.28); }
 
 /* Chart legend guide strip */
 .chart-legend-guide {

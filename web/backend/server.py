@@ -214,10 +214,10 @@ class PredictRequest(BaseModel):
 
 class PredictResponse(BaseModel):
     predictions: list[float] = Field(..., description="Mean forecast")
-    median: list[float] = Field(..., description="Median forecast")
-    lower: list[float] = Field(..., description="Lower bound (10th percentile)")
-    upper: list[float] = Field(..., description="Upper bound (90th percentile)")
-    samples: int = Field(..., description="Number of samples used for quantiles")
+    median: list[float] = Field(..., description="Median forecast (equals mean when only one sample is drawn)")
+    lower: list[float] = Field(..., description="Lower edge of the uncertainty band")
+    upper: list[float] = Field(..., description="Upper edge of the uncertainty band")
+    samples: int = Field(..., description="Number of samples drawn (1 = single trajectory, band is synthetic)")
     model: str = Field(default="regimeflow")
     inference_time_ms: float = Field(..., description="Inference time in ms")
 
@@ -262,9 +262,11 @@ def _predict_regimeflow(
     )
     elapsed = (time.perf_counter() - t0) * 1000
 
-    # RegimeFlow single sample -> use it as mean; add synthetic uncertainty
+    # RegimeFlow returns a single deterministic trajectory (one noise draw).
+    # The band below is NOT a statistical prediction interval — it is a fixed
+    # ±20% reference band scaled by the signal magnitude.
     mean = pred.tolist()
-    std_est = float(np.abs(pred).mean() * 0.1)  # ~10% relative uncertainty
+    std_est = float(np.abs(pred).mean() * 0.1)  # 10% of mean magnitude → band = ±20%
 
     return PredictResponse(
         predictions=mean,

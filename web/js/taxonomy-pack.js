@@ -91,17 +91,19 @@ function buildBPHierarchy() {
   BIO_MODELS_DATA.forEach(function(m) { modelById[m.id] = m; });
 
   var catColors = {
-    'Immune Response':      '#E74C3C',
-    'Signal Transduction':  '#F39C12',
-    'Metabolic Pathways':   '#27AE60',
-    'Cell Cycle & Division':'#2980B9',
-    'Gene Regulation':      '#8E44AD',
-    'Protein & Folding':    '#16A085',
-    'Apoptosis & Stress':   '#D35400',
-    'Development':          '#2C3E50',
-    'Muscle & Contraction': '#C0392B',
-    'Drug & Transport':     '#7F8C8D',
-    'Other Processes':      '#95A5A6'
+    'Signal Transduction':        '#F39C12',
+    'Immune Response':            '#E74C3C',
+    'Metabolism':                 '#27AE60',
+    'Cell Cycle & Division':      '#2980B9',
+    'Gene Expression & Regulation':'#8E44AD',
+    'Development & Differentiation':'#16A085',
+    'Apoptosis & Cell Death':     '#D35400',
+    'Circadian Rhythm':           '#2C3E50',
+    'Transport & Trafficking':    '#7F8C8D',
+    'Stress & Damage Response':   '#C0392B',
+    'Calcium Homeostasis':        '#1ABC9C',
+    'Cell Motility & Cytoskeleton':'#9B59B6',
+    'Other':                      '#95A5A6'
   };
 
   var children = [];
@@ -116,34 +118,25 @@ function buildBPHierarchy() {
     });
     if (!fullModels.length) continue;
 
-    var childNodes = fullModels.map(function(m) {
-      return {
-        name: m.name, model: m,
-        // Large constant → each model bubble is visually substantial (r ≈ 40px)
-        value: 5000
-      };
+    var nModels = fullModels.length;
+
+    // Sample models for visual bubbles — same logic as taxonomy buildHierarchy.
+    // Categories with >TABLE_THRESHOLD models open a paginated table on click
+    // instead of rendering hundreds of unreadable bubbles.
+    var sampleCount = Math.min(MAX_VISIBLE_BUBBLES, nModels);
+    var sampled = fullModels.slice(0, sampleCount);
+    var childNodes = sampled.map(function(m) {
+      return { name: m.name, model: m, value: Math.max(20, (m.species || 2) * 4) };
     });
 
-    var nModels = fullModels.length;
-    // Parent padding: buffers for d3.pack's enclosing-circle requirement.
-    // Small-n needs lots of buffer (2 circles can't fill a circle efficiently);
-    // large-n packs more tightly so needs less.
-    var padRatio;
-    if (nModels <= 1)       padRatio = 0.55;
-    else if (nModels <= 2)  padRatio = 1.60;
-    else if (nModels <= 3)  padRatio = 0.85;
-    else if (nModels <= 5)  padRatio = 0.45;
-    else if (nModels <= 10) padRatio = 0.32;
-    else                    padRatio = 0.24;
-    var parentPad = Math.round(nModels * 5000 * padRatio);
     children.push({
       name: cat,
       color: catColors[cat] || '#95A5A6',
       models: fullModels,
       modelCount: nModels,
-      sampleCount: nModels,
-      needsTable: false,
-      value: parentPad,
+      sampleCount: sampleCount,
+      needsTable: nModels > TABLE_THRESHOLD,
+      value: Math.max(300, nModels * 15),
       children: childNodes
     });
   }
@@ -164,6 +157,11 @@ function buildBPHierarchy() {
 //   3. Re-packing children within the adjusted parent
 // ================================================================
 function correctBPRadii(root) {
+  // Disabled — buildBPHierarchy now uses the same value scheme
+  // (max(300, n*15)) + sample/table logic as taxonomy mode, so d3.pack lays
+  // it out correctly without the old radius-correcting hacks (which also
+  // forced every category into the same [55, 280] radius band).
+  return;
   if (_tp.mode !== 'processes') return;
   if (!root || !root.children) return;
   // TEMPORARY: set to false to skip correction & see raw pack layout
@@ -337,7 +335,7 @@ function renderTaxTable() {
     var q = search.value.toLowerCase().trim();
     if (q) {
       models = models.filter(function(m) {
-        return (m.name||'').toLowerCase().indexOf(q) >= 0 ||
+        return getDisplayName(m).toLowerCase().indexOf(q) >= 0 ||
                (m.id||'').toLowerCase().indexOf(q) >= 0;
       });
     }
@@ -389,7 +387,7 @@ function renderTaxTable() {
       if (!selected.length) { alert('No rows selected.'); return; }
       var header = 'ID,DisplayName,OriginalName,Regime,Species,Domain';
       var rows = selected.map(function(m) {
-        var dName = getShortName(m) || getDisplayName(m) || (m.name||'');
+        var dName = getDisplayName(m) || (m.name||'');
         return [m.id, '"' + dName + '"', '"' + (m.name||'') + '"', m.regime||'', m.species||0, domainName].join(',');
       });
       var csv = header + '\n' + rows.join('\n');
@@ -465,8 +463,8 @@ function renderTaxRows(models) {
     var checked = _tableSelected[m.id] ? ' checked' : '';
     var selClass = _tableSelected[m.id] ? ' selected' : '';
 
-    var rowDisplay = getShortName(m) || getDisplayName(m) || (m.name || '');
-    var rowOriginal = (rowDisplay !== (m.name || '') && (m.name || '')) ? ' <span style="color:#4a5f73;font-size:11px;">(' + (m.name || '') + ')</span>' : '';
+    var rowDisplay = getDisplayName(m) || (m.name || '');
+    var rowOriginal = (m.name && rowDisplay !== m.name && rowDisplay.indexOf(m.name) < 0) ? ' <span style="color:#4a5f73;font-size:11px;">(' + (m.name || '') + ')</span>' : '';
     html += '<div class="tax-row' + selClass + '" data-id="' + m.id + '">' +
       '<div class="tax-row-main">' +
         '<span class="tax-row-title">' + rowDisplay + rowOriginal + '</span>' +
@@ -827,7 +825,7 @@ function initGlobalSearch() {
       // Determine which fields matched which keywords
       var matchTags = [];
       keywords.forEach(function(kw) {
-        if (item.name.toLowerCase().indexOf(kw) >= 0 && matchTags.indexOf('name') < 0) matchTags.push('name');
+        if ((item.name.toLowerCase().indexOf(kw) >= 0 || getDisplayName(item.model).toLowerCase().indexOf(kw) >= 0) && matchTags.indexOf('name') < 0) matchTags.push('name');
         if (item.id.toLowerCase().indexOf(kw) >= 0 && matchTags.indexOf('id') < 0) matchTags.push('id');
         if (item.domain.toLowerCase().indexOf(kw) >= 0 && matchTags.indexOf('domain') < 0) matchTags.push('domain');
         if (item.process.toLowerCase().indexOf(kw) >= 0 && matchTags.indexOf('process') < 0) matchTags.push('process');
@@ -854,12 +852,11 @@ function initGlobalSearch() {
       }
 
       var displayName = getDisplayName(item.model);
-      var shortName = getShortName(item.model) || displayName;
       var div = document.createElement('div');
       div.className = 'tax-search-item';
       div.innerHTML =
         '<div class="tax-search-row">' +
-          '<span class="tax-search-name" title="' + (displayName||item.name) + '">' + (shortName||displayName||item.name) + '</span>' +
+          '<span class="tax-search-name" title="' + (displayName||item.name) + '">' + (displayName||item.name) + '</span>' +
           '<span class="tax-search-species">🧬 ' + item.species + '</span>' +
         '</div>' +
         '<div class="tax-search-row2">' +
@@ -907,7 +904,7 @@ function initGlobalSearch() {
 
   function selectSearchResult(item) {
     results.style.display = 'none';
-    input.value = item.name + ' (' + item.domain + ')';
+    input.value = (getDisplayName(item.model) || item.name) + ' (' + item.domain + ')';
 
     // Try to navigate bubble chart to the matching domain/process first
     if (_tp.init && _tp.root && _tp.focus === _tp.root) {
@@ -1372,12 +1369,6 @@ function switchTaxonomyMode(mode) {
   document.querySelectorAll('.tax-mode-btn').forEach(function(btn) {
     btn.classList.toggle('active', btn.dataset.mode === mode);
   });
-
-  // Update BP availability hint
-  var hint = document.getElementById('bp-avail-hint');
-  if (hint) {
-    hint.style.display = (mode === 'taxonomy' && typeof BIO_PROCESSES_DATA !== 'undefined') ? '' : 'none';
-  }
 
   // Update footer text
   if (_tp.footerText) {

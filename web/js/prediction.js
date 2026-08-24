@@ -15,12 +15,12 @@
 //   1. Render 部署   — 前后端同源，API_BASE = ''（空字符串 = 相对路径）
 //   2. 本地 dev 服务器 — python server.py 启动，同源访问，API_BASE = ''
 //   3. 本地文件打开   — file:// 协议，连接到本地 localhost:8000
-// 如需连接远程 Render 后端，将 RENDER_URL 设为你的 Render 服务地址:
+// 如需让 file:// 直连远程后端，把 RENDER_URL 设为远程地址（默认留空）:
 //   例如: var RENDER_URL = 'https://regimeflow-web.onrender.com';
-var RENDER_URL = 'https://regimeflow-web.onrender.com';
+var RENDER_URL = '';
 var API_BASE = (function() {
   if (RENDER_URL) return RENDER_URL;
-  // 同源部署（Render 生产 / 本地 server.py）→ 使用相对路径
+  // 同源部署（Render 生产 / 本地 server.py）→ 使用相对路径（本地加载 RegimeFlow 模型）
   if (window.location.protocol === 'http:' || window.location.protocol === 'https:') return '';
   // file:// 协议打开 → 默认连接本地后端
   return 'http://localhost:8000';
@@ -28,8 +28,7 @@ var API_BASE = (function() {
 
 // ── State ──────────────────────────────────────────────────────
 var _pwState = {
-  pathwayIdx:    -1,      // expanded pathway index, -1 = none
-  modelIdx:      -1,      // selected model within pathway, -1 = none
+  modelIdx:      -1,      // selected model index within currentModelList, -1 = none
   spIdx:         0,       // species index
   spNames:       [],      // species names from loaded CSV
   ctxLen:        96,      // context length
@@ -39,14 +38,21 @@ var _pwState = {
   ctxTime:       null,    // context time array
   fullColumns:   null,    // all parsed CSV columns (cached for species switching)
   fullTime:      null,    // full time array from CSV
-  currentModel:  null,    // currently loaded pathway model
-  loading:       false
+  currentModel:  null,    // currently loaded model
+  loading:       false,
+  overlayAll:    true,    // true = overlay all species; false = single species
+  dim:           'taxonomy', // active classification dimension: 'taxonomy' | 'process'
+  selKey:        '',         // selected category key in current dim ('' = all)
+  currentModelList: []       // flat model list matching the current single-dim filter
 };
 
 var _backendStatus = { regimeflow_loaded: false, chronos_loaded: false, device: 'cpu', denoise_steps: 0 };
-var _bioTrajectoryLoaded = false;  // legacy flag for backward compat
-var _failedModels = {};  // key: 'pi-mi' → true for models that returned 404/500
-var _activeViewMode = 'pathway';  // 'pathway' | 'bio' — which view currently owns the chart
+var _failedModels = {};  // key: model index → true for models that returned 404/500
+var _activeViewMode = 'pathway';  // 'pathway' | 'compare' — which view currently owns the chart
+
+// Multi-species overlay palette + cap (one colour per species)
+var SPECIES_COLORS = ['#4A90D9','#F39C12','#2ECC71','#E74C3C','#9B59B6','#1ABC9C','#F1C40F','#E67E22','#3498DB','#E84393','#00CEC9','#A29BFE','#55EFC4','#FD79A8','#6C5CE7','#FF7675'];
+var MAX_OVERLAY_SPECIES = 15;
 
 // ================================================================
 // ChartError — clean error-state overlay for the prediction chart
@@ -89,8 +95,8 @@ var ChartError = (function() {
     var is404 = detail.indexOf('404') !== -1;
     var icon = is404 ? '📭' : '⚠';
     var title = is404
-      ? 'Data not available for ' + model.name
-      : 'Failed to load ' + model.name;
+      ? 'Data not available for ' + getDisplayName(model)
+      : 'Failed to load ' + getDisplayName(model);
     var hint = is404
       ? 'This model\'s trajectory data is not yet available<br>in the HuggingFace dataset.'
       : 'An unexpected error occurred while fetching<br>the trajectory data.';
@@ -128,102 +134,342 @@ function retryCurrentModel() {
 function _pwSysName(m) { return m.name; }
 
 // ── Error badge helpers ──────────────────────────────────────────
-function markModelFailed(pi, mi) {
-  var key = pi + '-' + mi;
-  _failedModels[key] = true;
-  var badge = document.getElementById('pw-errbadge-' + pi + '-' + mi);
+function markModelFailed(i) {
+  _failedModels[i] = true;
+  var badge = document.getElementById('pw-errbadge-' + i);
   if (badge) badge.classList.add('visible');
-  var item = document.getElementById('pw-model-' + pi + '-' + mi);
+  var item = document.getElementById('pw-model-' + i);
   if (item) item.classList.add('has-error');
 }
 
-function markModelOk(pi, mi) {
-  var key = pi + '-' + mi;
-  delete _failedModels[key];
-  var badge = document.getElementById('pw-errbadge-' + pi + '-' + mi);
+function markModelOk(i) {
+  delete _failedModels[i];
+  var badge = document.getElementById('pw-errbadge-' + i);
   if (badge) badge.classList.remove('visible');
-  var item = document.getElementById('pw-model-' + pi + '-' + mi);
+  var item = document.getElementById('pw-model-' + i);
   if (item) item.classList.remove('has-error');
+}
+
+// ================================================================
+// Category comparison — render all models in a selected category
+// ================================================================
+var CAT_REGIME_COLOR = {
+  oscillation:     '#F39C12',
+  inc_stable:      '#2ECC71',
+  dec_stable:      '#E74C3C',
+  directly_stable: '#4A90D9',
+  increasing:      '#2ECC71',
+  decreasing:      '#E74C3C'
+};
+
+var _catCompareState = { seq: 0 };
+
+// Flat model list filtered by the active dimension only (single-select, no AND).
+function currentFilteredModels() {
+  if (!_pwState.selKey) return BIO_MODELS_DATA.slice();
+  var entries = (_pwState.dim === 'taxonomy')
+    ? (BIO_DOMAIN_DATA[_pwState.selKey] || [])
+    : (BIO_PROCESSES_DATA[_pwState.selKey] || []);
+  var ids = {};
+  entries.forEach(function(e) { ids[e.id] = true; });
+  return BIO_MODELS_DATA.filter(function(m) { return ids[m.id]; });
+}
+
+function categoryLabel() {
+  if (!_pwState.selKey) return '';
+  return (_pwState.dim === 'taxonomy' ? '🧬 ' : '🧪 ') + _pwState.selKey;
+}
+
+function parseCsv(text) {
+  var lines = text.trim().split('\n');
+  var headers = lines[0].split(',').map(function(h) { return h.trim(); });
+  var columns = {};
+  headers.forEach(function(h) { columns[h] = []; });
+  for (var i = 1; i < lines.length; i++) {
+    var vals = lines[i].split(',');
+    headers.forEach(function(h, j) { columns[h].push(parseFloat(vals[j])); });
+  }
+  var time = columns['time'] || [];
+  var spNames = headers.filter(function(h) {
+    return h !== 'time' && !/_(max|min|norm|mean|std|sum|avg)$/.test(h);
+  });
+  return { time: time, spNames: spNames, columns: columns };
+}
+
+function pickRepresentativeSpecies(parsed) {
+  var bestData = null, bestRange = -1;
+  parsed.spNames.forEach(function(sp) {
+    var d = parsed.columns[sp];
+    if (!d || !d.length) return;
+    var min = Infinity, max = -Infinity;
+    for (var i = 0; i < d.length; i++) {
+      if (d[i] < min) min = d[i];
+      if (d[i] > max) max = d[i];
+    }
+    var range = max - min;
+    if (range > bestRange) { bestRange = range; bestData = d; }
+  });
+  return { time: parsed.time, data: bestData || [] };
+}
+
+function renderCategoryComparison() {
+  if (!window._predictChart) return;
+
+  _activeViewMode = 'compare';
+  updateBackButton();
+
+  // Hide single-model legend guide in comparison mode
+  var guide = document.getElementById('chart-legend-guide');
+  if (guide) guide.style.display = 'none';
+
+  var models = currentFilteredModels();
+  var seq = ++_catCompareState.seq;
+
+  // Nothing selected — prompt
+  if (_pwState.selKey === '') {
+    _activeViewMode = 'compare';
+    window._predictChart.setOption({
+      backgroundColor: 'transparent',
+      title: { text: 'Select a category', subtext: 'pick a category above, or a model from the list', left: 'center', top: '38%',
+        textStyle: { color: '#6a8299', fontSize: 16 }, subtextStyle: { color: '#4a5f73', fontSize: 12 } },
+      xAxis: { show: false }, yAxis: { show: false }, series: []
+    }, true);
+    return;
+  }
+
+  // Empty intersection
+  if (models.length === 0) {
+    _activeViewMode = 'compare';
+    window._predictChart.setOption({
+      backgroundColor: 'transparent',
+      title: { text: 'No models match', subtext: categoryLabel(), left: 'center', top: '38%',
+        textStyle: { color: '#E74C3C', fontSize: 16 }, subtextStyle: { color: '#6a8299', fontSize: 12 } },
+      xAxis: { show: false }, yAxis: { show: false }, series: []
+    }, true);
+    return;
+  }
+
+  _activeViewMode = 'compare';
+
+  // Loading state
+  window._predictChart.setOption({
+    backgroundColor: 'transparent',
+    title: { text: categoryLabel(), subtext: 'Loading ' + models.length + ' models…', left: 'center', top: '38%',
+      textStyle: { color: '#e0e6ed', fontSize: 16 }, subtextStyle: { color: '#F39C12', fontSize: 12 } },
+    xAxis: { show: false }, yAxis: { show: false }, series: []
+  }, true);
+
+  var collected = [];
+  var cursor = 0;
+  var CONCURRENCY = 8;
+
+  function renderSoFar() {
+    if (seq !== _catCompareState.seq) return;
+    var series = collected.map(function(c) {
+      return {
+        name: c.shortName,
+        type: 'line',
+        data: c.time.map(function(t, i) { return [t, c.data[i]]; }),
+        lineStyle: { color: c.color, width: 1.2 },
+        itemStyle: { color: c.color },
+        symbol: 'none', smooth: true
+      };
+    });
+    window._predictChart.setOption({
+      backgroundColor: 'transparent',
+      animationDuration: 200,
+      animationEasing: 'cubicOut',
+      title: { text: categoryLabel(), subtext: collected.length + ' / ' + models.length + ' models', left: 'center', top: 8,
+        textStyle: { color: '#e0e6ed', fontSize: 16 }, subtextStyle: { color: '#6a8299', fontSize: 11 } },
+      tooltip: { trigger: 'axis', backgroundColor: '#1a2a3a', borderColor: '#2a4057', textStyle: { color: '#e0e6ed', fontSize: 12 } },
+      legend: { type: 'scroll', orient: 'horizontal', bottom: 10, left: 5, right: 5, itemWidth: 10, itemHeight: 10,
+        icon: 'circle', textStyle: { color: '#8899aa', fontSize: 10 } },
+      grid: { left: 55, right: 30, top: 70, bottom: 55 },
+      xAxis: { type: 'value', axisLine: { lineStyle: { color: '#2a4057' } }, axisLabel: { color: '#6a8299', fontSize: 10 },
+        splitLine: { lineStyle: { color: '#1a2a3a' } } },
+      yAxis: { type: 'value', axisLine: { lineStyle: { color: '#2a4057' } }, axisLabel: { color: '#6a8299', fontSize: 10 },
+        splitLine: { lineStyle: { color: '#1a2a3a' } } },
+      series: series
+    }, true);
+  }
+
+  function loadNext() {
+    if (seq !== _catCompareState.seq) return;
+    if (cursor >= models.length) return;
+    var m = models[cursor++];
+    var csvUrl = 'https://huggingface.co/datasets/HengRao/SysBio-Traj/resolve/main/Data/'
+      + m.id + '/' + m.name + '.csv';
+    fetch(csvUrl).then(function(r) {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.text();
+    }).then(function(text) {
+      if (seq !== _catCompareState.seq) return;
+      var parsed = parseCsv(text);
+      var rep = pickRepresentativeSpecies(parsed);
+      if (rep.data.length) {
+        collected.push({
+          shortName: getLabelName(m, 28),
+          color: CAT_REGIME_COLOR[m.regime] || '#8899aa',
+          time: rep.time,
+          data: rep.data
+        });
+        renderSoFar();
+      }
+      loadNext();
+    }).catch(function() {
+      if (seq !== _catCompareState.seq) return;
+      loadNext();
+    });
+  }
+
+  for (var c = 0; c < CONCURRENCY; c++) loadNext();
+}
+
+// Show the "back to list" button only while viewing a single model.
+function updateBackButton() {
+  var btn = document.getElementById('btn-back-to-list');
+  if (!btn) return;
+  btn.style.display = (_activeViewMode === 'pathway') ? '' : 'none';
+}
+
+// Exit the single-model view and return to the category comparison / list.
+function backToList() {
+  _pwState.modelIdx = -1;
+  _pwState.currentModel = null;
+  _pwState.spIdx = 0;
+
+  // Clear list highlight
+  document.querySelectorAll('.pw-model-item').forEach(function(el) { el.classList.remove('active'); });
+
+  // Reset regime tag
+  var tagEl = document.getElementById('regime-tag');
+  if (tagEl) { tagEl.textContent = ''; tagEl.className = 'regime-tag'; }
+
+  // Reset species selector
+  var selEl = document.getElementById('species-select');
+  if (selEl) selEl.innerHTML = '<option value="0">— Select a model first —</option>';
+
+  // Reset sidebar note to backend status
+  updateSidebarNote();
+
+  // Return to category comparison (or the select-a-category prompt)
+  renderCategoryComparison();
 }
 
 // ================================================================
 // initPrediction — entry point
 // ================================================================
 function initPrediction() {
-  if (typeof PATHWAY_MODELS === 'undefined') return;
+  if (typeof BIO_MODELS_DATA === 'undefined' ||
+      typeof BIO_DOMAIN_DATA === 'undefined' ||
+      typeof BIO_PROCESSES_DATA === 'undefined') return;
 
   // Check backend
   fetch(API_BASE + '/api/health').then(function(r) { return r.json(); })
     .then(function(s) { _backendStatus = s; updateSidebarNote(); })
     .catch(function() {});
 
-  // ── Render pathway list ──
-  var listEl = document.getElementById('system-list');
-  if (!listEl) return;
+  // ── Dimension toggle + single dropdown + model list ──
+  var filterEl = document.getElementById('category-filter');
+  var listEl   = document.getElementById('pw-model-list');
+  var dimTabs  = document.querySelectorAll('.dim-tab');
+  if (!filterEl || !listEl || !dimTabs.length) return;
 
-  listEl.innerHTML = '<div style="font-size:11px;color:var(--color-text-muted);text-transform:uppercase;letter-spacing:1.5px;margin-bottom:10px;">Biological Pathways</div>';
+  // Populate the single dropdown from the active dimension's categories.
+  function buildDropdown() {
+    var keys, allLabel, icon;
+    if (_pwState.dim === 'taxonomy') {
+      keys = Object.keys(BIO_DOMAIN_DATA).sort();
+      allLabel = '— All domains —';
+      icon = '🧬';
+    } else {
+      keys = Object.keys(BIO_PROCESSES_DATA).sort();
+      allLabel = '— All processes —';
+      icon = '🧪';
+    }
+    filterEl.innerHTML = '<option value="">' + allLabel + '</option>' +
+      keys.map(function(k) {
+        var len = _pwState.dim === 'taxonomy' ? BIO_DOMAIN_DATA[k].length : BIO_PROCESSES_DATA[k].length;
+        return '<option value="' + escapeHtml(k) + '">' + icon + ' ' + escapeHtml(k) + ' (' + len + ')</option>';
+      }).join('');
+    filterEl.value = _pwState.selKey || '';
+  }
 
-  PATHWAY_MODELS.forEach(function(pw, pi) {
-    var item = document.createElement('div');
-    item.className = 'pw-category';
-    item.innerHTML =
-      '<div class="pw-cat-header">' +
-        '<span class="pw-cat-icon">' + (pw.icon || '📁') + '</span>' +
-        '<span class="pw-cat-name">' + pw.pathway + '</span>' +
-        '<span class="pw-cat-count">' + pw.models.length + '</span>' +
-      '</div>' +
-      '<div class="pw-cat-desc">' + (pw.desc || '') + '</div>';
-    item.addEventListener('click', function() { togglePathway(pi); });
-    listEl.appendChild(item);
-
-    // Model list (hidden until expanded)
-    var modelList = document.createElement('div');
-    modelList.className = 'pw-model-list';
-    modelList.id = 'pw-models-' + pi;
-    pw.models.forEach(function(m, mi) {
+  // Render the flat model list for the current filter.
+  function renderModelList(models) {
+    listEl.innerHTML = '';
+    models.forEach(function(m, i) {
       var mel = document.createElement('div');
       mel.className = 'pw-model-item';
-      mel.id = 'pw-model-' + pi + '-' + mi;
+      mel.id = 'pw-model-' + i;
       var l1 = REGIME_TO_L1[m.regime] || 'stable';
       var l1def = REGIME_L1_DEFS[l1] || {};
       mel.innerHTML =
-        '<span class="pw-model-name">' + m.name + '</span>' +
-        '<span class="pw-model-error-badge" id="pw-errbadge-' + pi + '-' + mi + '">⚠</span>' +
-        '<span class="pw-model-id">' + m.id + '</span>' +
-        '<span class="pw-model-tag" style="color:' + (l1def.color||'#8899aa') + '">' + (l1def.icon||'') + ' ' + (l1def.label||m.regime) + '</span>' +
-        (m.note ? '<span class="pw-model-note" title="' + m.note.replace(/"/g,'&quot;') + '">' + m.note + '</span>' : '');
-      mel.addEventListener('click', function(e) {
-        e.stopPropagation();
-        selectPathwayModel(pi, mi);
-      });
-      modelList.appendChild(mel);
+        '<span class="pw-model-name">' + escapeHtml(getDisplayName(m)) + '</span>' +
+        '<span class="pw-model-error-badge" id="pw-errbadge-' + i + '">⚠</span>' +
+        '<span class="pw-model-id">' + escapeHtml(m.id) + '</span>' +
+        '<span class="pw-model-tag" style="color:' + (l1def.color || '#8899aa') + '">' + (l1def.icon || '') + ' ' + (l1def.label || m.regime) + '</span>';
+      mel.addEventListener('click', function() { selectModel(i); });
+      listEl.appendChild(mel);
     });
-    item.appendChild(modelList);
+    var total = document.createElement('div');
+    total.className = 'pw-total';
+    total.textContent = models.length + ' / ' + BIO_MODELS_DATA.length + ' models';
+    listEl.appendChild(total);
+  }
+
+  function refresh() {
+    _pwState.currentModelList = currentFilteredModels();
+    renderModelList(_pwState.currentModelList);
+    renderCategoryComparison();
+  }
+
+  // Mode switch: reset the prior dimension's filter, rebuild dropdown + list.
+  dimTabs.forEach(function(tab) {
+    tab.addEventListener('click', function() {
+      var dim = tab.dataset.dim;
+      if (_pwState.dim === dim) return;
+      _pwState.dim = dim;
+      _pwState.selKey = '';
+      _pwState.modelIdx = -1;
+      dimTabs.forEach(function(t) { t.classList.remove('active'); });
+      tab.classList.add('active');
+      buildDropdown();
+      refresh();
+    });
   });
 
-  // Total count
-  var totalDiv = document.createElement('div');
-  totalDiv.style.cssText = 'font-size:10px;color:var(--color-text-muted);text-align:center;padding:8px 0;';
-  totalDiv.textContent = PATHWAY_TOTAL_MODELS + ' pathway models';
-  listEl.appendChild(totalDiv);
+  filterEl.addEventListener('change', function() {
+    _pwState.selKey = filterEl.value;
+    _pwState.modelIdx = -1;
+    refresh();
+  });
+
+  // Initial list (chart prompt is rendered after echarts.init below).
+  buildDropdown();
+  _pwState.currentModelList = currentFilteredModels();
+  renderModelList(_pwState.currentModelList);
 
   // ── Species selector ──
   var selEl = document.getElementById('species-select');
   if (selEl) {
     selEl.innerHTML = '<option value="0">— Select a model first —</option>';
     selEl.addEventListener('change', function() {
-      var spIdx = parseInt(selEl.value) || 0;
-      if (_activeViewMode === 'bio') {
-        // Multi-line view: highlight one species, dim others
-        _bioChartState.selSpIdx = spIdx;
-        highlightBioSpecies(spIdx);
+      var val = selEl.value;
+      if (val === '-1') {
+        // Overlay all species
+        renderAllSpecies();
       } else {
         // Single-species pathway view: switch to that species
-        _pwState.spIdx = spIdx;
+        _pwState.spIdx = parseInt(val) || 0;
         redrawPathwayChart();
       }
     });
   }
+
+  // ── Back to list button ──
+  var backBtn = document.getElementById('btn-back-to-list');
+  if (backBtn) backBtn.addEventListener('click', backToList);
 
   // ── Chart ──
   if (!window._predictChart) {
@@ -233,22 +479,15 @@ function initPrediction() {
     if (window._predictChart) window._predictChart.resize();
   }, 200));
 
-  // Show initial prompt
-  if (window._predictChart) {
-    window._predictChart.setOption({
-      backgroundColor: 'transparent',
-      title: { text: 'Select a pathway model', subtext: 'to view its trajectory', left: 'center', top: '38%',
-        textStyle: { color: '#6a8299', fontSize: 16 }, subtextStyle: { color: '#4a5f73', fontSize: 12 } },
-      xAxis: { show: false }, yAxis: { show: false }, series: []
-    });
-  }
+  // Show initial prompt (default category view)
+  renderCategoryComparison();
 
   // ── Tab switching ──
   document.querySelectorAll('.input-tab').forEach(function(tab) {
     tab.addEventListener('click', function() {
       document.querySelectorAll('.input-tab').forEach(function(t) { t.classList.remove('active'); });
       tab.classList.add('active');
-      var showPathway = tab.dataset.tab === 'examples';
+      var showPathway = tab.dataset.tab === 'models';
       document.getElementById('system-list').style.display = showPathway ? '' : 'none';
       document.getElementById('custom-input-panel').style.display = showPathway ? 'none' : '';
       if (showPathway) {
@@ -271,40 +510,21 @@ function initPrediction() {
 // ================================================================
 // Pathway browsing
 // ================================================================
-function togglePathway(pi) {
-  var wasOpen = (_pwState.pathwayIdx === pi);
-  // Close all
-  document.querySelectorAll('.pw-category').forEach(function(el) { el.classList.remove('open'); });
-  document.querySelectorAll('.pw-model-list').forEach(function(el) { el.classList.remove('open'); });
-  document.querySelectorAll('.pw-model-item').forEach(function(el) { el.classList.remove('active'); });
+function selectModel(i) {
+  var models = _pwState.currentModelList;
+  var model  = models[i];
+  if (!model) return;
 
-  if (wasOpen) {
-    _pwState.pathwayIdx = -1;
-    return;
-  }
-
-  _pwState.pathwayIdx = pi;
-  var catEl = document.querySelectorAll('.pw-category')[pi];
-  if (catEl) catEl.classList.add('open');
-  var listEl = document.getElementById('pw-models-' + pi);
-  if (listEl) listEl.classList.add('open');
-}
-
-function selectPathwayModel(pi, mi) {
-  _pwState.pathwayIdx = pi;
-  _pwState.modelIdx   = mi;
-  _pwState.spIdx      = 0;
-  _bioTrajectoryLoaded = false;
-
-  var model = PATHWAY_MODELS[pi].models[mi];
-  _pwState.currentModel = model;
+  _pwState.modelIdx       = i;
+  _pwState.spIdx          = 0;
+  _pwState.currentModel   = model;
 
   // Clear any previous error state before loading new model
   ChartError.clear();
 
   // Highlight
   document.querySelectorAll('.pw-model-item').forEach(function(el) { el.classList.remove('active'); });
-  var mel = document.getElementById('pw-model-' + pi + '-' + mi);
+  var mel = document.getElementById('pw-model-' + i);
   if (mel) mel.classList.add('active');
 
   // Update regime tag
@@ -328,6 +548,8 @@ function loadPathwayTrajectory(model) {
   _pwState.loading = true;
 
   _activeViewMode = 'pathway';
+  updateBackButton();
+  var displayName = getDisplayName(model);
 
   // Clear any stale error overlay before loading
   ChartError.clear();
@@ -335,7 +557,7 @@ function loadPathwayTrajectory(model) {
   // Update sidebar note
   var noteEl = document.querySelector('.sidebar-note');
   if (noteEl) {
-    noteEl.innerHTML = '🔄 Loading ' + model.name + '…';
+    noteEl.innerHTML = '🔄 Loading ' + escapeHtml(displayName) + '…';
     noteEl.style.background = 'var(--color-tag-yellow, #1a1a0a)';
     noteEl.style.borderColor = '#332e15';
     noteEl.style.color = '#998844';
@@ -391,37 +613,36 @@ function loadPathwayTrajectory(model) {
     _pwState.loading = false;
 
     // Clear error badge on success
-    markModelOk(_pwState.pathwayIdx, _pwState.modelIdx);
+    markModelOk(_pwState.modelIdx);
     ChartError.clear();
 
-    // Populate species selector
+    // Populate species selector (with "All species" overlay option)
     var selEl = document.getElementById('species-select');
     if (selEl) {
-      selEl.innerHTML = spNames.map(function(n, i) {
-        return '<option value="' + i + '"' + (i === spIdx ? ' selected' : '') + '>' + n + '</option>';
-      }).join('');
+      selEl.innerHTML = '<option value="-1" selected>— All species —</option>' +
+        spNames.map(function(n, i) {
+          return '<option value="' + i + '">' + n + '</option>';
+        }).join('');
     }
 
     // Update sidebar note
     if (noteEl) {
-      noteEl.innerHTML = '🧬 <b>' + model.name + '</b><br>' +
-        '<span style="font-size:10px;color:#8899aa;">' + model.id + ' · ' + spNames.length +
+      noteEl.innerHTML = '🧬 <b>' + escapeHtml(displayName) + '</b><br>' +
+        '<span style="font-size:10px;color:#8899aa;">' + escapeHtml(model.id) + ' · ' + spNames.length +
         ' species · ' + timeLen + ' steps</span><br>' +
         '<span style="color:var(--color-text-highlight, #c0d0e0);">' +
-        '📊 Context: ' + ctxLen + ' pts · GT: ' + gtData.length + ' pts</span>';
+        '📊 ' + spNames.length + ' species · Input ' + ctxLen + ' pts</span>';
       noteEl.style.background = 'var(--color-tag-green, #1a3020)';
       noteEl.style.borderColor = '#2a4a30';
       noteEl.style.color = '#88aa88';
     }
 
-    // Ensure skeleton shows for at least _skelMinMs, then render
+    // Ensure skeleton shows for at least _skelMinMs, then render all species overlaid
     ChartSkeleton.ensureMin(function() {
       ChartSkeleton.hide();  // fade out skeleton
       // Small delay so fade starts before chart renders
       setTimeout(function() {
-        drawChart(ctxTime, ctxData, gtTime, gtData, null, spName, model.name);
-        // Attempt prediction (placeholder until weights arrive)
-        attemptPrediction(ctxData, ctxTime, gtTime, gtData, spName, model.name, model.regime);
+        renderAllSpecies();
       }, 100);
     });
 
@@ -430,7 +651,7 @@ function loadPathwayTrajectory(model) {
     console.error('Failed to load trajectory:', err);
 
     // Mark model as failed in sidebar
-    markModelFailed(_pwState.pathwayIdx, _pwState.modelIdx);
+    markModelFailed(_pwState.modelIdx);
 
     // Let skeleton show for minimum time, then transition to error state
     ChartSkeleton.ensureMin(function() {
@@ -441,7 +662,7 @@ function loadPathwayTrajectory(model) {
     });
 
     if (noteEl) {
-      noteEl.innerHTML = '❌ Failed to load ' + model.name;
+      noteEl.innerHTML = '❌ Failed to load ' + escapeHtml(displayName);
       noteEl.style.background = 'var(--color-tag-red, #301a1a)';
       noteEl.style.borderColor = '#4a2a30';
       noteEl.style.color = '#E74C3C';
@@ -493,6 +714,7 @@ function attemptPrediction(ctxData, ctxTime, gtTime, gtData, spName, modelName, 
 // ================================================================
 function redrawPathwayChart() {
   if (!_pwState.currentModel || !_pwState.fullColumns) return;
+  _pwState.overlayAll = false;
 
   var model   = _pwState.currentModel;
   var spIdx   = _pwState.spIdx;
@@ -523,8 +745,186 @@ function redrawPathwayChart() {
   if (selEl) selEl.value = spIdx;
 
   // Update chart immediately
-  drawChart(ctxTime, ctxData, gtTime, gtData, null, spName, model.name);
-  attemptPrediction(ctxData, ctxTime, gtTime, gtData, spName, model.name, model.regime);
+  var displayName = getDisplayName(model);
+  drawChart(ctxTime, ctxData, gtTime, gtData, null, spName, displayName);
+  attemptPrediction(ctxData, ctxTime, gtTime, gtData, spName, displayName, model.regime);
+}
+
+// ================================================================
+// Multi-species overlay — all species of one model on one chart
+// ================================================================
+function renderAllSpecies() {
+  if (!_pwState.currentModel || !_pwState.fullColumns) return;
+  _pwState.overlayAll = true;
+
+  var model       = _pwState.currentModel;
+  var spNames     = _pwState.spNames;
+  var columns     = _pwState.fullColumns;
+  var time        = _pwState.fullTime;
+  var ctxLen      = _pwState.ctxLen;
+  var displayName = getDisplayName(model);
+
+  // Cap overlay to keep the chart readable for large models
+  var truncated = spNames.length > MAX_OVERLAY_SPECIES;
+  var shown     = truncated ? spNames.slice(0, MAX_OVERLAY_SPECIES) : spNames;
+
+  var ctxTime = time.slice(0, ctxLen);
+  var gtTime  = time.slice(ctxLen);
+  var speciesCtx = {}, speciesGt = {};
+  shown.forEach(function(sp) {
+    var d = columns[sp] || [];
+    speciesCtx[sp] = d.slice(0, ctxLen);
+    speciesGt[sp] = d.slice(ctxLen);
+  });
+
+  // Draw actual (ground truth) lines immediately; predictions fill in async
+  drawAllSpeciesChart(shown, ctxTime, speciesCtx, speciesGt, gtTime, {}, displayName, truncated, spNames.length);
+
+  // Fire predictions for every species in parallel
+  var predictions = {};
+  var pending = shown.length;
+  function done() {
+    pending--;
+    if (pending === 0) {
+      drawAllSpeciesChart(shown, ctxTime, speciesCtx, speciesGt, gtTime, predictions, displayName, truncated, spNames.length);
+    }
+  }
+  shown.forEach(function(sp) {
+    var ctxData = speciesCtx[sp];
+    var gtLen   = (speciesGt[sp] || []).length;
+    var reqBody = {
+      context: ctxData,
+      prediction_length: Math.min(256, gtLen),
+      traj_pattern: REGIME_TO_PATTERN[model.regime] || 0,
+      period: (model.regime === 'oscillation') ? 12.5 : 0.0
+    };
+    fetch(API_BASE + '/api/predict', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(reqBody)
+    }).then(function(r) {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    }).then(function(result) {
+      predictions[sp] = result.predictions || [];
+      done();
+    }).catch(function() {
+      predictions[sp] = null;
+      done();
+    });
+  });
+}
+
+function drawAllSpeciesChart(spNames, ctxTime, speciesCtx, speciesGt, gtTime, predictions, sysName, truncated, totalCount) {
+  if (!window._predictChart) return;
+
+  var series = [];
+  var lastCtxTime = ctxTime[ctxTime.length - 1];
+  var dt = ctxTime[1] - ctxTime[0];
+
+  spNames.forEach(function(sp, i) {
+    var color = SPECIES_COLORS[i % SPECIES_COLORS.length];
+    var ctxData = speciesCtx[sp] || [];
+    var gtData  = speciesGt[sp] || [];
+
+    // Actual trajectory (dashed, dim) — context + ground truth
+    var actualTime = ctxTime.concat(gtTime);
+    var actualData = ctxData.concat(gtData);
+    series.push({
+      name: sp, type: 'line',
+      data: actualTime.map(function(t, j) { return [t, actualData[j]]; }),
+      lineStyle: { color: color, width: 1.2, type: 'dashed', opacity: 0.4 },
+      itemStyle: { color: color, opacity: 0.4 },
+      symbol: 'none', smooth: true
+    });
+
+    // Prediction trajectory (solid) — context + forecast
+    var pred = predictions[sp];
+    var predData;
+    if (pred && pred.length) {
+      var predTime = [];
+      for (var pt = 0; pt < pred.length; pt++) {
+        predTime.push(+(lastCtxTime + (pt + 1) * dt).toFixed(2));
+      }
+      predData = ctxTime.concat(predTime).map(function(t, j) {
+        return [t, j < ctxData.length ? ctxData[j] : pred[j - ctxData.length]];
+      });
+    } else {
+      // Pending — show observed context only
+      predData = ctxTime.map(function(t, j) { return [t, ctxData[j]]; });
+    }
+    series.push({
+      name: sp, type: 'line',
+      data: predData,
+      lineStyle: { color: color, width: 2 },
+      itemStyle: { color: color },
+      symbol: 'none', smooth: true
+    });
+  });
+
+  // "now" divider on the first series
+  if (series.length) {
+    series[0].markLine = {
+      silent: true, symbol: 'none',
+      lineStyle: { color: '#8899aa', type: 'dashed', width: 1 },
+      label: {
+        formatter: 'now', color: '#c0d0e0', fontSize: 10, fontWeight: 600,
+        backgroundColor: '#162231', padding: [2, 6], borderRadius: 3,
+        borderColor: '#2a4057', borderWidth: 1
+      },
+      data: [{ xAxis: lastCtxTime }]
+    };
+  }
+
+  var firstPred = predictions[spNames[0]];
+  var forecastSteps = (firstPred && firstPred.length) ? firstPred.length : '…';
+  var subtext = spNames.length + ' species · dashed = actual · solid = prediction · observed ' +
+    ctxTime.length + ' → forecast ' + forecastSteps + ' steps';
+  if (truncated) subtext += ' · showing first ' + spNames.length + ' of ' + totalCount;
+
+  // Hide the single-model legend guide; the ECharts legend carries species colours
+  var guide = document.getElementById('chart-legend-guide');
+  if (guide) guide.style.display = 'none';
+
+  window._predictChart.setOption({
+    backgroundColor: 'transparent',
+    animationDuration: 600,
+    animationEasing: 'cubicOut',
+    title: {
+      text: sysName,
+      subtext: subtext,
+      left: 'center', top: 8,
+      textStyle:    { color: '#e0e6ed', fontSize: 16, fontWeight: 600 },
+      subtextStyle: { color: '#6a8299', fontSize: 11, fontWeight: 500 }
+    },
+    tooltip: {
+      trigger: 'axis',
+      backgroundColor: '#1a2a3a',
+      borderColor: '#2a4057',
+      textStyle: { color: '#e0e6ed', fontSize: 12 }
+    },
+    legend: {
+      bottom: 10,
+      type: 'scroll',
+      icon: 'circle', itemWidth: 10, itemHeight: 10,
+      textStyle: { color: '#8899aa', fontSize: 11 },
+      data: spNames
+    },
+    grid: { left: 55, right: 28, top: 64, bottom: 44 },
+    xAxis: {
+      type: 'value',
+      axisLine:  { lineStyle: { color: '#2a4057' } },
+      axisLabel: { color: '#6a8299', fontSize: 11, margin: 8 },
+      splitLine: { lineStyle: { color: '#1a2a3a' } }
+    },
+    yAxis: {
+      type: 'value',
+      axisLine:  { lineStyle: { color: '#2a4057' } },
+      axisLabel: { color: '#6a8299', fontSize: 11, margin: 8 },
+      splitLine: { lineStyle: { color: '#1a2a3a' } }
+    },
+    series: series
+  }, true);  // notMerge — clear any stale series
 }
 
 // Skeleton Screen: see js/components/skeleton.js (ChartSkeleton API)
@@ -534,73 +934,54 @@ function drawChart(ctxTime, ctxData, gtTime, gtData, apiResult, spName, sysName)
   if (!window._predictChart) return;
   var series = [];
 
-  // 1) Context (blue solid)
+  var lastCtxTime = ctxTime[ctxTime.length - 1];
+  var dt = ctxTime[1] - ctxTime[0];
+
+  // 1) Actual trajectory (dashed gray) — context + ground truth as one continuous line
+  var actualTime = ctxTime.concat(gtTime);
+  var actualData = ctxData.concat(gtData);
   series.push({
-    name: 'Context',
+    name: 'Actual',
     type: 'line',
-    data: ctxTime.map(function(t, i) { return [t, ctxData[i]]; }),
-    lineStyle:  { color: '#4A90D9', width: 2.5 },
-    itemStyle:  { color: '#4A90D9' },
+    data: actualTime.map(function(t, i) { return [t, actualData[i]]; }),
+    lineStyle:  { color: '#6a8299', width: 1.6, type: 'dashed' },
+    itemStyle:  { color: '#6a8299' },
     symbol: 'none', smooth: true,
-    markArea: {
-      silent: true,
-      itemStyle: { color: 'rgba(74,144,217,0.08)' },
-      data: [[{ xAxis: ctxTime[0] }, { xAxis: ctxTime[ctxTime.length-1] }]]
+    markLine: {
+      silent: true, symbol: 'none',
+      lineStyle: { color: '#8899aa', type: 'dashed', width: 1 },
+      label: {
+        formatter: 'now', color: '#c0d0e0', fontSize: 10, fontWeight: 600,
+        backgroundColor: '#162231', padding: [2, 6], borderRadius: 3,
+        borderColor: '#2a4057', borderWidth: 1
+      },
+      data: [{ xAxis: lastCtxTime }]
     }
   });
 
-  // 2) Ground truth (gray dashed)
-  series.push({
-    name: 'Ground Truth',
-    type: 'line',
-    data: gtTime.map(function(t, i) { return [t, gtData[i]]; }),
-    lineStyle:  { color: '#6a8299', width: 1.5, type: 'dashed' },
-    itemStyle:  { color: '#6a8299' },
-    symbol: 'none', smooth: true
-  });
-
-  // 3) Prediction — real or placeholder
+  // 2) Prediction trajectory (solid orange) — context + predicted future
   if (apiResult && !apiResult._pending && apiResult.predictions) {
-    var lastCtxTime = ctxTime[ctxTime.length-1];
-    var dt = ctxTime[1] - ctxTime[0];
     var predLen = apiResult.predictions.length;
     var predTime = [];
     for (var pt = 0; pt < predLen; pt++) {
-      predTime.push(+(lastCtxTime + (pt+1) * dt).toFixed(2));
+      predTime.push(+(lastCtxTime + (pt + 1) * dt).toFixed(2));
     }
     series.push({
       name: 'Prediction',
       type: 'line',
-      data: predTime.map(function(t, i) { return [t, apiResult.predictions[i]]; }),
-      lineStyle:  { color: '#F39C12', width: 2.5 },
+      data: ctxTime.concat(predTime).map(function(t, i) {
+        return [t, i < ctxData.length ? ctxData[i] : apiResult.predictions[i - ctxData.length]];
+      }),
+      lineStyle:  { color: '#F39C12', width: 2.5, shadowBlur: 12, shadowColor: 'rgba(243,156,18,0.4)' },
       itemStyle:  { color: '#F39C12' },
-      symbol: 'none', smooth: true,
-      markArea: {
-        silent: true,
-        itemStyle: { color: 'rgba(243,156,18,0.06)' },
-        data: [[{ xAxis: predTime[0] }, { xAxis: predTime[predLen-1] }]]
-      }
+      symbol: 'none', smooth: true
     });
-    if (apiResult.lower && apiResult.upper) {
-      var lo = predTime.map(function(t, i) { return [t, apiResult.lower[i]]; });
-      var hi = predTime.map(function(t, i) { return [t, apiResult.upper[i]]; }).reverse();
-      series.push({
-        name: 'Confidence',
-        type: 'line',
-        data: lo.concat(hi),
-        lineStyle: { color: 'transparent', width: 0 },
-        areaStyle: { color: 'rgba(243,156,18,0.12)' },
-        symbol: 'none', silent: true, stack: 'confidence'
-      });
-    }
   } else if (apiResult && apiResult._pending) {
-    // Placeholder — dashed orange line at same position as GT, with note
-    var lastCtxTime2 = ctxTime[ctxTime.length-1];
-    var dt2 = ctxTime[1] - ctxTime[0];
+    // Placeholder — dotted orange line spanning the forecast horizon, no data
     var predLen2 = Math.min(256, gtData.length);
     var predTime2 = [];
     for (var pt2 = 0; pt2 < predLen2; pt2++) {
-      predTime2.push(+(lastCtxTime2 + (pt2+1) * dt2).toFixed(2));
+      predTime2.push(+(lastCtxTime + (pt2 + 1) * dt).toFixed(2));
     }
     series.push({
       name: 'Prediction (pending)',
@@ -608,18 +989,18 @@ function drawChart(ctxTime, ctxData, gtTime, gtData, apiResult, spName, sysName)
       data: predTime2.map(function(t) { return [t, null]; }),
       lineStyle:  { color: '#F39C12', width: 1.5, type: 'dotted' },
       itemStyle:  { color: '#F39C12' },
-      symbol: 'none',
-      markArea: {
-        silent: true,
-        itemStyle: { color: 'rgba(243,156,18,0.04)' },
-        data: [[{ xAxis: predTime2[0] }, { xAxis: predTime2[predLen2-1] }]]
-      }
+      symbol: 'none'
     });
   }
 
-  var subtext = (apiResult && apiResult._pending)
-    ? '⚠ Prediction pending — waiting for AI model weights'
-    : 'Context: ' + ctxData.length + ' pts  ·  Ground Truth: ' + gtData.length + ' pts';
+  var subtext;
+  if (apiResult && apiResult._pending) {
+    subtext = '⚠ Prediction pending — waiting for AI model weights';
+  } else if (apiResult && apiResult.predictions) {
+    subtext = 'Observed ' + ctxData.length + '  →  forecast ' + apiResult.predictions.length + ' steps';
+  } else {
+    subtext = 'Observed ' + ctxData.length + '  ·  actual ' + (ctxData.length + gtData.length) + ' steps';
+  }
 
   // Show legend guide strip
   var guide = document.getElementById('chart-legend-guide');
@@ -633,8 +1014,8 @@ function drawChart(ctxTime, ctxData, gtTime, gtData, apiResult, spName, sysName)
       text: sysName,
       subtext: subtext,
       left: 'center', top: 8,
-      textStyle:    { color: '#e0e6ed', fontSize: 16 },
-      subtextStyle: { color: (apiResult && apiResult._pending ? '#F39C12' : '#6a8299'), fontSize: 11 }
+      textStyle:    { color: '#e0e6ed', fontSize: 16, fontWeight: 600 },
+      subtextStyle: { color: (apiResult && apiResult._pending ? '#F39C12' : '#6a8299'), fontSize: 11, fontWeight: 500 }
     },
     tooltip: {
       trigger: 'axis',
@@ -642,26 +1023,18 @@ function drawChart(ctxTime, ctxData, gtTime, gtData, apiResult, spName, sysName)
       borderColor: '#2a4057',
       textStyle: { color: '#e0e6ed', fontSize: 12 }
     },
-    legend: {
-      bottom: 10,
-      icon: 'circle', itemWidth: 10, itemHeight: 10,
-      textStyle: { color: '#8899aa', fontSize: 11 },
-      emphasis: { focus: 'series' },
-      data: (apiResult && apiResult._pending)
-        ? ['Context', 'Ground Truth', 'Prediction (pending)']
-        : ['Context', 'Ground Truth']
-    },
-    grid: { left: 55, right: 30, top: 70, bottom: 55 },
+    legend: { show: false },
+    grid: { left: 55, right: 28, top: 64, bottom: 30 },
     xAxis: {
       type: 'value',
       axisLine:  { lineStyle: { color: '#2a4057' } },
-      axisLabel: { color: '#6a8299', fontSize: 10 },
+      axisLabel: { color: '#6a8299', fontSize: 11, margin: 8 },
       splitLine: { lineStyle: { color: '#1a2a3a' } }
     },
     yAxis: {
       type: 'value',
       axisLine:  { lineStyle: { color: '#2a4057' } },
-      axisLabel: { color: '#6a8299', fontSize: 10 },
+      axisLabel: { color: '#6a8299', fontSize: 11, margin: 8 },
       splitLine: { lineStyle: { color: '#1a2a3a' } }
     },
     series: series
@@ -740,348 +1113,45 @@ function handleCustomPredict() {
 }
 
 // ================================================================
-// highlightBioSpecies — dim all series except the selected one
+// Unified entry point — bubble chart "Load Trajectory to Prediction"
+// Renders the single-model actual+prediction view (same as clicking a
+// model in the pathway list), replacing the legacy multi-line view.
 // ================================================================
-function highlightBioSpecies(spIdx) {
-  var state = window._bioChartState;
-  if (!state || !window._predictChart) return;
+function openModelPrediction(model) {
+  if (!model) return;
 
-  // If species is outside visible top-N, force-expand first
-  if (!state.expanded && state.needsExpand && spIdx >= state.topNames.length) {
-    state.selSpIdx = spIdx;
-    renderBioChart(true);
-    return;
-  }
+  // Reset to a clean single-model state (model not in the pathway list).
+  _pwState.currentModel = model;
+  _pwState.modelIdx     = -1;   // no list item to highlight
+  _pwState.spIdx        = 0;
 
-  state.selSpIdx = spIdx;
-  var allSeries = state.allSeries;
-  var palette = state.palette;
-  var topNames = state.topNames;
-  var expanded = state.expanded;
-
-  // Only include currently visible series (respect expand/collapse)
-  var visibleIndices = [];
-  for (var i = 0; i < allSeries.length; i++) {
-    if (expanded || !state.needsExpand || i < topNames.length) {
-      visibleIndices.push(i);
-    }
-  }
-
-  var highlighted = [];
-  for (var vi = 0; vi < visibleIndices.length; vi++) {
-    var i = visibleIndices[vi];
-    var s = allSeries[i];
-    var isSel = (i === spIdx);
-    var clone = {
-      name: s.name,
-      type: s.type,
-      data: s.data,
-      symbol: s.symbol,
-      smooth: s.smooth,
-      z: isSel ? 10 : 0,
-      lineStyle: {
-        color: palette[i % palette.length],
-        width: isSel ? 3 : 0.8,
-        opacity: isSel ? 1 : 0.06
-      },
-      itemStyle: {
-        color: palette[i % palette.length],
-        opacity: isSel ? 1 : 0.06
-      }
-    };
-    highlighted.push(clone);
-  }
-
-  window._predictChart.setOption({
-    series: highlighted
-  });  // merge mode — only updates series
-}
-
-// ================================================================
-// Bio chart renderer (used by loadBioTrajectory)
-// ================================================================
-function renderBioChart(expanded) {
-  var state = window._bioChartState;
-  if (!state) return;
-  state.expanded = expanded;
-
-  // Decide which series to show
-  var showAll = expanded || !state.needsExpand;
-  var series = showAll ? state.allSeries.slice() : state.allSeries.slice(0, state.topNames.length);
-  var shownCount = showAll ? state.totalSpecies : state.topNames.length;
-  var hiddenCount = state.totalSpecies - shownCount;
-
-  // Build legend data from the actual visible series
-  var legendData = [];
-  for (var i = 0; i < shownCount; i++) {
-    legendData.push(state.speciesMeta[i].name);
-  }
-  // Expand / collapse toggle entry
-  if (!showAll && hiddenCount > 0) {
-    legendData.push('▸ +' + hiddenCount + ' others');
-  }
-  if (showAll && state.needsExpand) {
-    legendData.push('◂ collapse');
-  }
-
-  // Add dummy toggle series
-  var chartSeries = series.slice();
-  if (!showAll && hiddenCount > 0) {
-    chartSeries.push({ name: '▸ +' + hiddenCount + ' others', type: 'line', data: [],
-      lineStyle: { opacity: 0 }, itemStyle: { opacity: 0 } });
-  }
-  if (showAll && state.needsExpand) {
-    chartSeries.push({ name: '◂ collapse', type: 'line', data: [],
-      lineStyle: { opacity: 0 }, itemStyle: { opacity: 0 } });
-  }
-
-  // Subtitle
-  var subtext = state.modelId + ' · ' + state.totalSpecies + ' species · ' + state.timeLen + ' steps';
-  if (!showAll && hiddenCount > 0) {
-    subtext += '  |  Top ' + shownCount + ' by range — click ▸ to show all ' + state.totalSpecies;
-  }
-
-  // Y range always from all data (consistent axis, no jump on expand)
-  var yMin = state.yMin, yMax = state.yMax;
-
-  var useScroll = state.totalSpecies > 8;
-  var legendHeight = useScroll ? 55 : 22;
-  var gridBottom = useScroll ? 82 : 40;
-
-  ChartSkeleton.ensureMin(function() {
-    ChartSkeleton.hide();
-    setTimeout(function() {
-      window._predictChart.setOption({
-        backgroundColor: 'transparent',
-        animationDuration: 600,
-        animationEasing: 'cubicOut',
-        title: {
-          text: state.modelName,
-          subtext: subtext,
-          left: 'center', top: 8,
-          textStyle: { color: '#e0e6ed', fontSize: 16 },
-          subtextStyle: { color: '#6a8299', fontSize: 11 }
-        },
-        tooltip: { trigger: 'axis', backgroundColor: '#1a2a3a', borderColor: '#2a4057',
-          textStyle: { color: '#e0e6ed', fontSize: 12 } },
-        legend: {
-          type: useScroll ? 'scroll' : 'plain',
-          orient: 'horizontal',
-          bottom: useScroll ? 10 : 6,
-          left: 5, right: 5,
-          height: legendHeight,
-          width: 'auto',
-          itemGap: 6,
-          itemWidth: 10, itemHeight: 10,
-          icon: 'circle',
-          textStyle: { color: '#8899aa', fontSize: 10, padding: [0, 4, 0, 0] },
-          pageTextStyle: { color: '#6a8299' },
-          pageIconSize: 11,
-          pageButtonItemGap: 4,
-          pageButtonGap: 8,
-          emphasis: { focus: 'series' },
-          padding: [6, 8],
-          data: legendData
-        },
-        grid: { left: 55, right: 30, top: 75, bottom: gridBottom },
-        xAxis: { type: 'value', axisLine: { lineStyle: { color: '#2a4057' } },
-          axisLabel: { color: '#6a8299', fontSize: 10 },
-          splitLine: { lineStyle: { color: '#1a2a3a' } } },
-        yAxis: { type: 'value', min: yMin, max: yMax,
-          axisLine: { lineStyle: { color: '#2a4057' } },
-          axisLabel: { color: '#6a8299', fontSize: 10 },
-          splitLine: { lineStyle: { color: '#1a2a3a' } } },
-        dataZoom: [
-          { type: 'inside', start: 0, end: 100 },
-          { type: 'slider', start: 0, end: 100, height: 20, bottom: 32,
-            borderColor: '#1e3045', backgroundColor: '#162231',
-            fillerColor: 'rgba(74,144,217,0.15)',
-            textStyle: { color: '#6a8299' } }
-        ],
-        series: chartSeries
-      }, true);  // notMerge — clean replace for expand/collapse
-      // Re-apply species highlight if one is selected
-      if (state.selSpIdx >= 0) {
-        highlightBioSpecies(state.selSpIdx);
-      }
-      _bindLegendToggle();
-    }, 100);
+  // Switch to the prediction view.
+  document.querySelectorAll('.nav-btn').forEach(function(b) {
+    b.classList.toggle('active', b.dataset.view === 'predict');
   });
-}
-
-// Legend toggle handler — intercept clicks on "+N others" / "collapse"
-// Bound once, delegates via ECharts legendselectchanged event
-if (!window._bioLegendBound) {
-  window._bioLegendBound = true;
-  // We attach the handler lazily after the chart is initialized.
-  // renderBioChart re-attaches each time (ECharts off/on is idempotent).
-}
-function _bindLegendToggle() {
-  if (!window._predictChart) return;
-  window._predictChart.off('legendselectchanged');
-  window._predictChart.on('legendselectchanged', function(params) {
-    if (!window._bioChartState) return;
-    var n = params.name || '';
-    if (n.indexOf('+') === 0 && n.indexOf('others') > 0) {
-      renderBioChart(true);
-    } else if (n.indexOf('collapse') >= 0) {
-      renderBioChart(false);
-    }
+  document.querySelectorAll('.view').forEach(function(v) {
+    v.classList.toggle('active', v.id === 'view-predict');
   });
-}
 
-// ================================================================
-// Legacy: loadBioTrajectory (called from detail panel button)
-// Shows ALL species as multi-line chart — backward compatible
-// ================================================================
-function loadBioTrajectory(modelId, modelName, speciesCount) {
-  _bioTrajectoryLoaded = true;
-  _activeViewMode = 'bio';
+  var backBubbles = document.getElementById('btn-back-to-bubbles');
+  if (backBubbles) backBubbles.style.display = '';
 
-  // Switch to prediction view
-  document.querySelectorAll('.nav-btn').forEach(function(b) { b.classList.remove('active'); });
-  var predBtn = document.querySelector('.nav-btn[data-view="predict"]');
-  if (predBtn) predBtn.classList.add('active');
-  document.querySelectorAll('.view').forEach(function(v) { v.classList.remove('active'); });
-  var predView = document.getElementById('view-predict');
-  if (predView) predView.classList.add('active');
-
-  // Hide pathway list + custom panel, show legacy view
+  // Show the pathway sidebar (single-model view uses the species selector + list).
   var listEl = document.getElementById('system-list');
   var customPanel = document.getElementById('custom-input-panel');
-  if (listEl) listEl.style.display = 'none';
+  if (listEl) listEl.style.display = '';
   if (customPanel) customPanel.style.display = 'none';
-  document.querySelectorAll('.input-tab').forEach(function(t) { t.classList.remove('active'); });
+  document.querySelectorAll('.input-tab').forEach(function(t) {
+    t.classList.toggle('active', t.dataset.tab === 'models');
+  });
 
-  var noteEl = document.querySelector('.sidebar-note');
-  if (noteEl) {
-    noteEl.innerHTML = '🧬 <b>' + modelName + '</b><br>' +
-      '<span style="font-size:10px;color:#8899aa;">' + modelId + ' · ' + speciesCount + ' species · 512 steps</span><br>' +
-      '<span style="color:#F39C12;">📊 Full trajectory from HuggingFace</span>';
-    noteEl.style.background = '#1a2a20';
-    noteEl.style.borderColor = '#2a4a30';
-    noteEl.style.color = '#88aa88';
-  }
-
+  // Chart may have been initialized while hidden — force resize after view switch.
   if (!window._predictChart) {
     window._predictChart = echarts.init(document.getElementById('predict-chart'));
   }
-  // Chart was initialized while hidden — force resize after view switch
   setTimeout(function() { if (window._predictChart) window._predictChart.resize(); }, 150);
 
-  ChartSkeleton.show({ name: modelName, id: modelId, species: speciesCount });
-
-  var csvUrl = 'https://huggingface.co/datasets/HengRao/SysBio-Traj/resolve/main/Data/'
-    + modelId + '/' + modelName + '.csv';
-
-  fetch(csvUrl).then(function(resp) {
-    if (!resp.ok) throw new Error('HTTP ' + resp.status);
-    return resp.text();
-  }).then(function(csvText) {
-    var lines = csvText.trim().split('\n');
-    var headers = lines[0].split(',').map(function(h) { return h.trim(); });
-    var columns = {};
-    headers.forEach(function(h) { columns[h] = []; });
-
-    for (var i = 1; i < lines.length; i++) {
-      var vals = lines[i].split(',');
-      headers.forEach(function(h, j) { columns[h].push(parseFloat(vals[j])); });
-    }
-
-    var time = columns['time'] || [];
-    var timeLen = time.length;
-
-    // ── Filter: exclude metric suffixes (_max, _min, _norm) ──
-    function isMetricSuffix(name) {
-      return /_(max|min|norm|mean|std|sum|avg)$/.test(name);
-    }
-    var speciesNames = headers.filter(function(h) {
-      return h !== 'time' && !isMetricSuffix(h);
-    });
-
-    var palette = ['#4A90D9','#F39C12','#2ECC71','#E74C3C','#9B59B6','#1ABC9C','#F1C40F',
-      '#E67E22','#3498DB','#8E44AD','#2C3E50','#16A085','#C0392B','#2980B9','#D35400'];
-
-    // ── Rank species by variance (most dynamic first) ──
-    var speciesMeta = speciesNames.map(function(sp) {
-      var data = columns[sp];
-      if (!data || !data.length) return null;
-      var min = Infinity, max = -Infinity;
-      for (var d = 0; d < data.length; d++) {
-        if (data[d] < min) min = data[d];
-        if (data[d] > max) max = data[d];
-      }
-      return { name: sp, range: max - min, min: min, max: max, data: data };
-    }).filter(Boolean);
-    speciesMeta.sort(function(a, b) { return b.range - a.range; });
-
-    var totalSpecies = speciesMeta.length;
-
-    // ── Smart threshold: ≤30 species → show all; >30 → top 15 + expand ──
-    var MAX_VISIBLE = 30;
-    var TOP_N = Math.min(totalSpecies, totalSpecies > MAX_VISIBLE ? 15 : totalSpecies);
-    var needsExpand = totalSpecies > MAX_VISIBLE;
-    var topNames = speciesMeta.slice(0, TOP_N).map(function(s) { return s.name; });
-
-    // ── Build ALL series ──
-    var allSeries = speciesMeta.map(function(sm, idx) {
-      if (!sm.data || !sm.data.length) return null;
-      return {
-        name: sm.name,
-        type: 'line',
-        data: time.map(function(t, i) { return [t, sm.data[i]]; }),
-        lineStyle: { color: palette[idx % palette.length], width: 1.5 },
-        itemStyle: { color: palette[idx % palette.length] },
-        symbol: 'none', smooth: true
-      };
-    }).filter(Boolean);
-
-    // ── Y-axis range from all data (not just visible) ──
-    var allMin = Infinity, allMax = -Infinity;
-    speciesMeta.forEach(function(sm) {
-      if (sm.min < allMin) allMin = sm.min;
-      if (sm.max > allMax) allMax = sm.max;
-    });
-    var yPad = Math.max((allMax - allMin) * 0.05, 0.01);
-
-    // Store for expand/collapse toggle
-    window._bioChartState = {
-      modelName: modelName, modelId: modelId,
-      time: time, timeLen: timeLen, speciesNames: speciesNames,
-      allSeries: allSeries,
-      topNames: topNames, totalSpecies: totalSpecies,
-      needsExpand: needsExpand, expanded: false,
-      yMin: allMin - yPad, yMax: allMax + yPad,
-      speciesMeta: speciesMeta, palette: palette,
-      selSpIdx: -1  // -1 = show all, otherwise highlight this species
-    };
-
-    // If small model → show all immediately; if large → show top N first
-    renderBioChart(needsExpand ? false : true);
-
-  var selEl = document.getElementById('species-select');
-  if (selEl) {
-    var prevVal = selEl.value;
-    selEl.innerHTML = '<option value="-1">— All species —</option>' +
-      speciesNames.map(function(n, i) {
-        return '<option value="' + i + '">' + n + '</option>';
-      }).join('');
-    // Restore previous selection or default to "All species"
-    selEl.value = (prevVal && parseInt(prevVal) >= 0) ? prevVal : '-1';
-  }
-
-  var tagEl = document.getElementById('regime-tag');
-  if (tagEl) { tagEl.textContent = 'BioModels'; tagEl.className = 'regime-tag regime-oscillation'; }
-  }).catch(function(err) {
-    console.error('Failed to load bio trajectory:', err);
-    ChartSkeleton.clear();
-    window._predictChart.setOption({
-      title: { text: 'Failed to load ' + modelName, left: 'center', top: '40%',
-        textStyle: { color: '#E74C3C', fontSize: 16 },
-        subtext: err.message, subtextStyle: { color: '#6a8299', fontSize: 12 } },
-      backgroundColor: 'transparent'
-    });
-  });
+  loadPathwayTrajectory(model);
 }
 
 // ================================================================

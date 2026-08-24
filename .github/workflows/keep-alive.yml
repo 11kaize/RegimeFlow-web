@@ -1,0 +1,19 @@
+name: Render keep-alive
+
+# Prevents the Render free-tier web service from sleeping (~15 min idle → cold start).
+# Pings the lightweight /api/health endpoint every 10 minutes so the service stays warm.
+on:
+  schedule:
+    - cron: '*/10 * * * *'   # every 10 minutes
+  workflow_dispatch: {}       # allow manual trigger for testing
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Render health endpoint
+        # -m 90 allows for a slow cold start; || true means a timeout/5xx
+        # never fails the job (we only care that a request was sent).
+        run: |
+          curl -sS -m 90 -o /dev/null -w 'health: %{http_code}\n' \
+            https://regimeflow-web.onrender.com/api/health || true
