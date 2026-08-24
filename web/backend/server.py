@@ -31,7 +31,7 @@ import numpy as np
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
 
 # Add project root for model imports
@@ -422,6 +422,37 @@ async def predict_multi(req: PredictMultiRequest):
             logger.error(f"Batch prediction error: {exc}")
             results.append(_predict_fallback(ctx, req.prediction_length))
     return PredictMultiResponse(results=results)
+
+
+# ── CSV proxy ─────────────────────────────────────────────────
+@app.get("/api/csv/{model_id}/{model_name}")
+async def proxy_csv(model_id: str, model_name: str):
+    """Proxy a SysBio-Traj CSV from HuggingFace.
+
+    The frontend used to fetch model trajectories straight from HuggingFace,
+    which is slow/unreliable for users far from HF (e.g. China). Serving it here
+    moves that fetch to Render → HF (fast, both in the US) and returns it to the
+    browser over the same connection it already uses for /api/predict.
+    """
+    import urllib.request
+    import urllib.parse
+
+    safe_id = urllib.parse.quote(model_id, safe="")
+    safe_name = urllib.parse.quote(model_name, safe="")
+    url = (
+        "https://huggingface.co/datasets/HengRao/SysBio-Traj/resolve/main/Data/"
+        f"{safe_id}/{safe_name}.csv"
+    )
+
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "RegimeFlow-web/2.0"})
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = resp.read()
+    except Exception as exc:
+        logger.warning(f"CSV proxy fetch failed for {model_id}/{model_name}: {exc}")
+        raise HTTPException(404, f"CSV not found for {model_id}/{model_name}")
+
+    return Response(content=data, media_type="text/csv")
 
 
 # ── Entry point ────────────────────────────────────────────────

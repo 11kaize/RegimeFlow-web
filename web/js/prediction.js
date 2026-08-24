@@ -565,8 +565,10 @@ function loadPathwayTrajectory(model) {
 
   ChartSkeleton.show(model);
 
-  var csvUrl = 'https://huggingface.co/datasets/HengRao/SysBio-Traj/resolve/main/Data/'
-    + model.id + '/' + model.name + '.csv';
+  // Fetch via the backend CSV proxy — Render → HuggingFace is fast (both US),
+  // whereas the browser → HF is slow/unreliable from e.g. China.
+  var csvUrl = API_BASE + '/api/csv/'
+    + encodeURIComponent(model.id) + '/' + encodeURIComponent(model.name);
 
   fetch(csvUrl).then(function(resp) {
     if (!resp.ok) throw new Error('HTTP ' + resp.status);
