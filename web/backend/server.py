@@ -180,6 +180,7 @@ app.mount("/css", StaticFiles(directory=str(static_dir / "css")), name="css")
 app.mount("/js", StaticFiles(directory=str(static_dir / "js")), name="js")
 app.mount("/data", StaticFiles(directory=str(static_dir / "data")), name="data")
 app.mount("/models", StaticFiles(directory=str(static_dir / "models")), name="models")
+app.mount("/vendor", StaticFiles(directory=str(static_dir / "vendor")), name="vendor")
 
 
 @app.get("/")
