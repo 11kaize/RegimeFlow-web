@@ -359,16 +359,23 @@ function initPrediction() {
     .catch(function() {});
 
   // 预热浏览器推理引擎：后台下载模型（首次 ~43MB，之后走 HTTP 缓存）。
-  // 下载期间在侧边栏显示实时进度；加载失败则预测时自动回退后端。
+  // 延迟到首屏泡泡图入场动画结束后再开始 —— 下载 + WASM 编译很吃 CPU，
+  // 会跟 taxonomy 的 550ms 动画抢主线程导致泡泡图出现时卡顿；进度按 1% 节流更新。
   if (window.RegimeFlowWeb) {
-    setModelDownloading(0);
-    RegimeFlowWeb.load({
-      backbone: _modelUrl(MODEL_URLS.backbone),
-      condEncoder: _modelUrl(MODEL_URLS.condEncoder),
-      onProgress: function(received, total) { setModelDownloading(received / total); },
-    }).then(function() {
-      setModelDownloading(null); // 完成/失败 → 恢复侧边栏默认（就绪/后端状态）
-    });
+    var _lastPct = -1;
+    setTimeout(function() {
+      setModelDownloading(0);
+      RegimeFlowWeb.load({
+        backbone: _modelUrl(MODEL_URLS.backbone),
+        condEncoder: _modelUrl(MODEL_URLS.condEncoder),
+        onProgress: function(received, total) {
+          var pct = Math.floor((received / total) * 100);
+          if (pct !== _lastPct) { _lastPct = pct; setModelDownloading(pct / 100); }
+        },
+      }).then(function() {
+        setModelDownloading(null); // 完成/失败 → 恢复侧边栏默认（就绪/后端状态）
+      });
+    }, 1500);
   }
 
   // ── Dimension toggle + single dropdown + model list ──
@@ -512,6 +519,62 @@ function initPrediction() {
 // ================================================================
 // Pathway browsing
 // ================================================================
+// Render the "about this model" card (paper reference + description) from
+// MODEL_REFERENCES (web/data/model-references.js, fetched from EBI BioModels).
+function renderModelReference(model) {
+  var el = document.getElementById('model-reference');
+  if (!el) return;
+  var ref = (typeof MODEL_REFERENCES !== 'undefined') ? MODEL_REFERENCES[model.id] : null;
+
+  if (!ref) {
+    el.innerHTML =
+      '<div class="mr-header"><span class="mr-title">📄 About this model</span></div>' +
+      '<div class="mr-empty">No publication info available for this model.</div>';
+    el.style.display = '';
+    return;
+  }
+
+  var html = '<div class="mr-header"><span class="mr-title">📄 About this model</span></div>';
+
+  if (ref.description) {
+    html += '<p class="mr-desc">' + escapeHtml(ref.description) + '</p>';
+  }
+
+  html += '<div class="mr-paper">';
+  if (ref.title) {
+    var link = ref.link || (ref.pubmedId ? 'https://pubmed.ncbi.nlm.nih.gov/' + ref.pubmedId + '/' : '');
+    if (link) {
+      html += '<div class="mr-paper-title"><a href="' + escapeHtml(link) + '" target="_blank" rel="noopener">' +
+        escapeHtml(ref.title) + ' ↗</a></div>';
+    } else {
+      html += '<div class="mr-paper-title">' + escapeHtml(ref.title) + '</div>';
+    }
+  }
+
+  var meta = [];
+  if (Array.isArray(ref.authors) && ref.authors.length) {
+    meta.push('<b>' + escapeHtml(ref.authors.join(', ')) + '</b>');
+  }
+  var cite = [];
+  if (ref.journal) cite.push(escapeHtml(ref.journal));
+  if (ref.year) cite.push(String(ref.year));
+  if (ref.volume) {
+    var volIssue = ref.volume + (ref.issue ? '(' + ref.issue + ')' : '');
+    cite.push(volIssue + (ref.pages ? ':' + ref.pages : ''));
+  }
+  if (cite.length) meta.push(cite.join(' '));
+  if (meta.length) html += '<div class="mr-meta">' + meta.join(' · ') + '</div>';
+
+  if (ref.pubmedId) {
+    html += '<a class="mr-pubmed" href="https://pubmed.ncbi.nlm.nih.gov/' + escapeHtml(ref.pubmedId) +
+      '/" target="_blank" rel="noopener">PubMed: ' + escapeHtml(ref.pubmedId) + ' ↗</a>';
+  }
+  html += '</div>';
+
+  el.innerHTML = html;
+  el.style.display = '';
+}
+
 function selectModel(i) {
   var models = _pwState.currentModelList;
   var model  = models[i];
@@ -523,6 +586,9 @@ function selectModel(i) {
 
   // Clear any previous error state before loading new model
   ChartError.clear();
+
+  // Show paper reference / model intro card
+  renderModelReference(model);
 
   // Highlight
   document.querySelectorAll('.pw-model-item').forEach(function(el) { el.classList.remove('active'); });
@@ -699,11 +765,14 @@ function attemptPrediction(ctxData, ctxTime, gtTime, gtData, spName, modelName, 
   var RF = window.RegimeFlowWeb;
   if (RF && !RF.isLoaded() && !RF.getError()) setBackendWaking(true);
 
+  setPredicting(true);
   getPrediction(ctxData, pattern, period, predLen).then(function(pred) {
     setBackendWaking(false);
+    setPredicting(false);
     drawChart(ctxTime, ctxData, gtTime, gtData, { predictions: pred }, spName, modelName);
   }).catch(function() {
     setBackendWaking(false);
+    setPredicting(false);
     drawChart(ctxTime, ctxData, gtTime, gtData, { _pending: true }, spName, modelName);
   });
 }
@@ -735,6 +804,21 @@ function setModelDownloading(frac) {
   noteEl.style.background = 'var(--color-tag-yellow, #1a1a0a)';
   noteEl.style.borderColor = '#332e15';
   noteEl.style.color = '#998844';
+}
+
+// Show/hide the independent "predicting" indicator in the chart area.
+// Distinct from data loading (skeleton + sidebar note) and model warm-up
+// (one-time ONNX download / backend cold start). Auto-dismissed by every
+// caller once the prediction promise settles.
+function setPredicting(on, msg) {
+  var el = document.getElementById('predict-status');
+  if (!el) return;
+  if (on) {
+    el.textContent = msg || '⏳ Predicting… wait a few seconds';
+    el.style.display = '';
+  } else {
+    el.style.display = 'none';
+  }
 }
 
 // ================================================================
@@ -820,9 +904,10 @@ function renderAllSpecies() {
     drawAllSpeciesChart(shown, ctxTime, speciesCtx, speciesGt, gtTime, predictions, displayName, truncated, spNames.length);
   }
 
+  setPredicting(true);
   var spIdx2 = 0;
   function nextSpecies() {
-    if (spIdx2 >= shown.length) return;
+    if (spIdx2 >= shown.length) { setPredicting(false); return; }
     var sp = shown[spIdx2];
     getPrediction(speciesCtx[sp], pattern, period, predLen).then(function(pred) {
       predictions[sp] = pred;
@@ -890,7 +975,7 @@ function drawAllSpeciesChart(spNames, ctxTime, speciesCtx, speciesGt, gtTime, pr
       silent: true, symbol: 'none',
       lineStyle: { color: '#8899aa', type: 'dashed', width: 1 },
       label: {
-        formatter: 'now', color: '#c0d0e0', fontSize: 10, fontWeight: 600,
+        formatter: 'start forecast', color: '#c0d0e0', fontSize: 10, fontWeight: 600,
         backgroundColor: '#162231', padding: [2, 6], borderRadius: 3,
         borderColor: '#2a4057', borderWidth: 1
       },
@@ -973,7 +1058,7 @@ function drawChart(ctxTime, ctxData, gtTime, gtData, apiResult, spName, sysName)
       silent: true, symbol: 'none',
       lineStyle: { color: '#8899aa', type: 'dashed', width: 1 },
       label: {
-        formatter: 'now', color: '#c0d0e0', fontSize: 10, fontWeight: 600,
+        formatter: 'start forecast', color: '#c0d0e0', fontSize: 10, fontWeight: 600,
         backgroundColor: '#162231', padding: [2, 6], borderRadius: 3,
         borderColor: '#2a4057', borderWidth: 1
       },
@@ -1102,7 +1187,7 @@ function handleCustomPredict() {
     return;
   }
 
-  statusEl.textContent = 'Predicting…';
+  statusEl.textContent = '⏳ Predicting… wait a few seconds';
   statusEl.className = 'custom-status loading';
 
   var allValues = parsed.values;
@@ -1139,6 +1224,9 @@ function openModelPrediction(model) {
   _pwState.currentModel = model;
   _pwState.modelIdx     = -1;   // no list item to highlight
   _pwState.spIdx        = 0;
+
+  // Show paper reference / model intro card
+  renderModelReference(model);
 
   // Switch to the prediction view.
   document.querySelectorAll('.nav-btn').forEach(function(b) {
@@ -1177,7 +1265,7 @@ function updateSidebarNote() {
   if (!noteEl) return;
   var RF = window.RegimeFlowWeb;
   if (RF && RF.isLoaded()) {
-    noteEl.innerHTML = '✅ Browser AI ready<br><span style="font-size:10px;">预测在本地运行 · 不占服务器</span>';
+    noteEl.innerHTML = '✅ Browser AI ready<br><span style="font-size:10px;">Running locally in your browser · no server load</span>';
     noteEl.style.background = '#1a2a20';
     noteEl.style.borderColor = '#2a4a30';
     noteEl.style.color = '#88aa88';

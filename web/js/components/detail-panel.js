@@ -29,6 +29,7 @@ function openDetailPanel(model, mode) {
     html +=
       '<div class="dp-header">' +
         '<div class="dp-name">🧬 ' + escapeHtml(getDisplayName(model) || model.name || '') + '</div>' +
+        '<div class="dp-fullname">' + escapeHtml(getFullName(model) || '') + '</div>' +
         '<div class="dp-id">' + escapeHtml(model.id || '') + '</div>' +
       '</div>' +
       '<div class="dp-section">' +

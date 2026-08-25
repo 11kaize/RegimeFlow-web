@@ -7,32 +7,34 @@
 <script src="vendor/echarts.min.js"></script>
 <script src="vendor/d3.min.js"></script>
 <script src="vendor/ort.min.js"></script>
-<script>window.ort && ort.env && ort.env.wasm && (ort.env.wasm.wasmPaths = 'vendor/');</script>
-<link rel="stylesheet" href="css/style.css?v=20">
-<script src="data/i18n.js?v=6"></script>
-<script src="data/model-display-names.js?v=1"></script>
+<script>window.ort && ort.env && ort.env.wasm && (ort.env.wasm.wasmPaths = window.location.origin + '/vendor/');</script>
+<link rel="stylesheet" href="css/style.css?v=22">
+<script src="data/i18n.js?v=7"></script>
+<script src="data/model-display-names.js?v=2"></script>
 <script src="js/i18n.js?v=4"></script>
 </head>
 <body>
 
-<!-- 导航栏 -->
+<!-- Navigation bar -->
 <nav class="navbar">
   <a href="/" class="nav-logo">RegimeFlow</a>
   <div class="nav-links">
-    <button class="nav-btn active" data-view="taxonomy">Models</button>
-    <button class="nav-btn" data-view="predict" data-i18n="nav.predict">Prediction</button>
-    <a href="https://github.com/hengrao02/RegimeFlow" target="_blank" class="nav-btn">GitHub ↗</a>
+    <button class="nav-btn active" data-view="taxonomy">Biological Models</button>
+    <button class="nav-btn" data-view="predict" data-i18n="nav.predict">Trajectory Prediction</button>
+    <a href="https://github.com/hengrao02/RegimeFlow" target="_blank" rel="noopener" class="nav-btn">Code ↗</a>
+    <a href="https://huggingface.co/datasets/HengRao/SysBio-Traj" target="_blank" rel="noopener" class="nav-btn">Data ↗</a>
+    <a href="https://openreview.net/forum?id=sI3UUkXJxs" target="_blank" rel="noopener" class="nav-btn">Paper ↗</a>
   </div>
 </nav>
 
-<!-- Taxonomy Circle Packing 视图（默认首页） -->
+<!-- Taxonomy Circle Packing view (default home) -->
 <div id="view-taxonomy" class="view active">
   <section class="hero-compact" style="text-align:center;max-width:80%;margin:0 auto;">
     <h1 data-i18n="overview.heroTitle" style="text-align:center;display:block;width:100%;">Taxonomic Composition</h1>
     <p class="hero-sub" style="text-align:center;">1,050 Biological Models</p>
   </section>
 
-  <!-- 全局搜索栏 -->
+  <!-- Global search bar -->
   <div id="tax-global-search-bar" style="max-width:640px;margin:0 auto 10px;position:relative;">
     <input id="tax-global-search" type="text" placeholder="Search by keyword — name, domain, regime, process…"
       style="width:100%;padding:10px 16px;font-size:14px;background:#1a2a3a;border:1px solid #2a4057;
@@ -40,6 +42,11 @@
     <div id="tax-global-results" style="display:none;position:absolute;top:100%;left:0;right:0;z-index:20;
       background:#162231;border:1px solid #2a4057;border-radius:0 0 10px 10px;
       max-height:320px;overflow-y:auto;box-shadow:0 8px 24px rgba(0,0,0,0.5);"></div>
+  </div>
+
+  <div id="tax-mode-bar" style="display:flex;justify-content:center;align-items:center;gap:8px;padding:10px 0 4px;">
+    <button class="tax-mode-btn active" data-mode="taxonomy">🧬 Taxonomy</button>
+    <button class="tax-mode-btn" data-mode="processes">🧪 Biological Processes</button>
   </div>
 
   <div id="taxonomy-pack-container" style="max-width:96%;margin:0 auto;padding:4px 0;">
@@ -77,20 +84,16 @@
       <div id="tax-table-pagination" class="tax-pagination"></div>
     </div>
   </div>
-  <div id="tax-mode-bar" style="display:flex;justify-content:center;align-items:center;gap:8px;padding:10px 0 4px;">
-    <button class="tax-mode-btn active" data-mode="taxonomy">🧬 Taxonomy</button>
-    <button class="tax-mode-btn" data-mode="processes">🧪 Biological Processes</button>
-  </div>
 
   <div id="taxonomy-hint" style="text-align:center;padding:8px;color:#8899aa;font-size:12px;">
     Click a circle to zoom in · Click background to zoom out
   </div>
 </div>
 
-<!-- Prediction视图 -->
+<!-- Prediction view -->
 <div id="view-predict" class="view">
   <div class="view-header">
-    <h2 data-i18n="predict.title">Prediction演示</h2>
+    <h2 data-i18n="predict.title">Systems Biology Trajectory Prediction</h2>
   </div>
   <div class="predict-layout">
     <div class="predict-sidebar">
@@ -107,33 +110,35 @@
         <div id="pw-model-list"></div>
       </div>
       <div id="custom-input-panel" style="display:none;">
-        <label class="input-label" data-i18n="predict.inputLabel">粘贴时序数据（每行一个值，或 time,value 两列）</label>
-        <textarea id="custom-data-input" data-i18n-placeholder="predict.inputPlaceholder" placeholder="例如：&#10;0, 1.2&#10;0.1, 1.5&#10;0.2, 1.8&#10;0.3, 2.1&#10;...&#10;（至少10个数据点）"></textarea>
+        <label class="input-label" data-i18n="predict.inputLabel">Paste time series (one value per line, or time,value CSV)</label>
+        <textarea id="custom-data-input" data-i18n-placeholder="predict.inputPlaceholder" placeholder="e.g.:&#10;0, 1.2&#10;0.1, 1.5&#10;0.2, 1.8&#10;0.3, 2.1&#10;...&#10;(at least 10 data points)"></textarea>
         <div class="input-row">
-          <label data-i18n="predict.ctxLen">上下文长度:</label>
+          <label data-i18n="predict.ctxLen">Context length:</label>
           <input type="number" id="custom-ctx-len" value="96" min="10" max="500" step="1">
-          <span class="input-unit" data-i18n="predict.ctxUnit">个点</span>
+          <span class="input-unit" data-i18n="predict.ctxUnit">pts</span>
         </div>
-        <button id="btn-custom-predict" class="btn-predict-custom" data-i18n="predict.btnPredict">🔮 开始预测</button>
+        <button id="btn-custom-predict" class="btn-predict-custom" data-i18n="predict.btnPredict">🔮 Predict</button>
         <div class="input-hint">
-          <span data-i18n="predict.inputHint">前 N 个点 = 输入轨迹（蓝色）· 剩余 = 对比基准（灰色虚线）<br>支持 CSV / TSV / 纯数值格式</span>
+          <span data-i18n="predict.inputHint">First N points = input trajectory (blue) · Remaining = baseline (gray dashed)<br>Supports CSV / TSV / plain numbers</span>
         </div>
         <div id="custom-status" class="custom-status"></div>
       </div>
       <div class="sidebar-note" data-i18n="predict.sidebarNote">
-        🔄 正在连接后端…<br>点击物种自动调用<br>Chronos-Bolt API 预测。
+        🔄 Connecting to backend…<br>Click a species to run<br>RegimeFlow prediction engine.
       </div>
     </div>
     <div class="predict-main">
       <div id="predict-chart"></div>
+      <div id="predict-status" class="predict-status" style="display:none;" aria-live="polite"></div>
       <div class="chart-legend-guide" id="chart-legend-guide" style="display:none;">
         <span class="legend-item"><span class="legend-swatch" style="background:#6a8299;border-style:dashed;"></span> Actual</span>
         <span class="legend-sep">·</span>
         <span class="legend-item"><span class="legend-swatch" style="background:#F39C12;"></span> Prediction</span>
       </div>
+      <div id="model-reference" class="model-reference" style="display:none;"></div>
       <div class="predict-controls">
-        <button id="btn-back-to-list" class="btn-back-list" style="display:none;">← 返回列表</button>
-        <label data-i18n="predict.selectSpecies">选择物种:</label>
+        <button id="btn-back-to-list" class="btn-back-list" style="display:none;">← Back to List</button>
+        <label data-i18n="predict.selectSpecies">Species:</label>
         <select id="species-select"></select>
         <span class="regime-tag" id="regime-tag"></span>
       </div>
@@ -141,14 +146,14 @@
   </div>
 </div>
 
-<!-- 模型详情侧边栏 -->
+<!-- Model detail sidebar -->
 <div id="detail-panel" class="detail-panel">
   <button class="detail-close" onclick="closeDetailPanel()">&times;</button>
   <div id="detail-content"></div>
 </div>
 <div id="detail-overlay" class="detail-overlay" onclick="closeDetailPanel()"></div>
 
-<!-- 模型详情模态框 -->
+<!-- Model detail modal -->
 <div id="modal-overlay" class="modal-overlay">
   <div class="modal">
     <button class="modal-close">&times;</button>
@@ -156,19 +161,20 @@
   </div>
 </div>
 
-<!-- 全局「返回泡泡图」按钮（在泡泡图视图上自动隐藏） -->
+<!-- Global "back to bubbles" button (auto-hidden on bubble view) -->
 <button id="btn-back-to-bubbles" class="btn-back-bubbles" style="display:none;">← Back to Home</button>
 
-<script src="js/core/utils.js?v=1"></script>
+<script src="js/core/utils.js?v=2"></script>
 <script src="data/regime-mappings.js?v=1"></script>
 <script src="data/pathway-models.js?v=1"></script>
 <script src="data/bio-models.js?v=5"></script>
 <script src="data/bio-domains.js?v=1"></script>
 	<script src="data/bio-processes.js?v=3"></script>
-<script src="js/components/detail-panel.js?v=4"></script>
+	<script src="data/model-references.js?v=2"></script>
+<script src="js/components/detail-panel.js?v=5"></script>
 <script src="js/components/skeleton.js?v=1"></script>
 <script src="js/engine-web.js?v=2"></script>
-<script src="js/prediction.js?v=34"></script>
+<script src="js/prediction.js?v=37"></script>
 <script src="js/taxonomy-pack.js?v=25"></script>
 <script>
 // ---- Taxonomy (default page) ----

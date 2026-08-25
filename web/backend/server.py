@@ -25,6 +25,7 @@ import time
 import threading
 import logging
 import json
+import mimetypes
 from pathlib import Path
 from contextlib import asynccontextmanager
 from typing import Optional
@@ -35,6 +36,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
+
+# Windows' mimetypes registry maps .mjs → text/plain, which breaks ES module
+# dynamic import() (onnxruntime-web loads vendor/ort-wasm-simd-threaded.mjs).
+# Register the correct JS MIME types before StaticFiles guesses them.
+mimetypes.add_type("text/javascript", ".mjs")
+mimetypes.add_type("text/javascript", ".js")
 
 # Add project root for model imports
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent

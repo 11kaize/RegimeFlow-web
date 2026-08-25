@@ -17,3 +17,6 @@ Materials/
 .codex
 .agents/
 skills-lock.json
+
+# fetch caches
+.cache/

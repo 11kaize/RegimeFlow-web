@@ -101,37 +101,26 @@ function getDisplayName(model) {
   return model.name || '';
 }
 
-// Extract just the biological description, dropping "AuthorYear - " prefix
+// Extract just the biological description, dropping the trailing " (AuthorYear)" citation
 function getShortName(model) {
   if (!model) return '';
   var full = getDisplayName(model);
   if (!full) return model.name || '';
 
-  // Pattern 1: "AuthorYear - Description"
-  var dashMatch = full.match(/^[A-Za-z][A-Za-z0-9]*\s*\d{4}\s*[-–—]\s*(.+)$/);
-  if (dashMatch) return dashMatch[1];
-
-  // Pattern 2: "AuthorYear_Description_Here" → "Description Here"
-  var usMatch = full.match(/^[A-Za-z][A-Za-z0-9]*\d{4}[_]\s*(.+)$/);
-  if (usMatch) {
-    return usMatch[1]
-      .replace(/_/g, ' ')
-      .replace(/([a-z])([A-Z])/g, '$1 $2')
-      .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2');
-  }
-
-  // Pattern 3: "author-year description" → capitalize
-  if (/^[a-z]/.test(full)) {
-    var cleaned = full.replace(/^[a-z][a-z0-9]*-[a-z][a-z0-9]*\s+/, '');
-    if (cleaned !== full) return cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
-    return full.charAt(0).toUpperCase() + full.slice(1);
-  }
-
-  // Pattern 4: "AuthorYearCamelDescription" → split camelCase
-  var camelMatch = full.match(/^[A-Za-z]+\d{4}([A-Z].+)$/);
-  if (camelMatch) return camelMatch[1].replace(/([a-z])([A-Z])/g, '$1 $2');
+  // Display format is "Description (AuthorYear)" → strip the known citation suffix
+  var suffix = ' (' + (model.name || '') + ')';
+  if (full.slice(-suffix.length) === suffix) return full.slice(0, -suffix.length);
 
   return full;
+}
+
+// Full descriptive title (original EBI BioModels name) for cross-reference
+function getFullName(model) {
+  if (!model) return '';
+  if (typeof MODEL_FULL_NAMES !== 'undefined' && MODEL_FULL_NAMES[model.id]) {
+    return MODEL_FULL_NAMES[model.id];
+  }
+  return getDisplayName(model) || model.name || '';
 }
 
 // Short name with length cap for tight spaces (bubble labels etc.)
