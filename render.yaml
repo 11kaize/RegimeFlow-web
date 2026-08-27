@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: regimeflow-web
+    name: regimeflow
     runtime: python
     rootDir: .
     buildCommand: pip install --no-cache-dir -r web/backend/requirements.txt

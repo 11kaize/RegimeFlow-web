@@ -15,11 +15,7 @@ jobs:
         # -m 90 allows for a slow cold start; || true means a timeout/5xx
         # never fails the job (we only care that a request was sent).
         run: |
-          # Ping both possible service URLs. Render appends a `-1` suffix when a
-          # service is recreated, so the live host may be `regimeflow-web-1`
-          # rather than `regimeflow-web`. Hitting both keeps the real one warm.
           for url in \
-            https://regimeflow-web.onrender.com/api/health \
-            https://regimeflow-web-1.onrender.com/api/health; do
+            https://regimeflow.onrender.com/api/health; do
             curl -sS -m 90 -o /dev/null -w "$url -> %{http_code}\n" "$url" || true
           done
