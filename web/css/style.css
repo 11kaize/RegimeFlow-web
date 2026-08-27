@@ -1079,6 +1079,13 @@ body.detail-collapsed #view-predict { margin-right: 44px; }
 .tax-search-empty { padding: var(--space-xl); text-align: center; color: #556678; font-size: 13px; }
 
 /* ---- Taxonomy Mode Toggle ---- */
+#tax-mode-bar {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 0 4px;
+}
 .tax-mode-btn {
   padding: 6px 18px;
   font-size: 13px;
