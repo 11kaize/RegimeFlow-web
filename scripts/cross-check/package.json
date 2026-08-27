@@ -1,0 +1,9 @@
+{
+  "name": "regimeflow-cross-check",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Deterministic cross-check of the JS inference port (engine-web.js) vs the Python engine",
+  "dependencies": {
+    "onnxruntime-node": "1.20.1"
+  }
+}

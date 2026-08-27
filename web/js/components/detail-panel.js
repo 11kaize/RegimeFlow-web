@@ -12,11 +12,9 @@
  * @param {Object} model  — Model record (from BIO_MODELS_DATA or ML models)
  * @param {string} mode   — 'bio' | 'ml'   (defaults to 'ml')
  */
-function openDetailPanel(model, mode) {
-  var panel   = document.getElementById('detail-panel');
-  var overlay = document.getElementById('detail-overlay');
+function _renderDetail(model, mode) {
   var content = document.getElementById('detail-content');
-  if (!panel || !content) return;
+  if (!content) return;
 
   mode = mode || 'ml';
   var html = '';
@@ -114,8 +112,23 @@ function openDetailPanel(model, mode) {
     }
   }
 
+}
+
+function openDetailPanel(model, mode) {
+  var panel   = document.getElementById('detail-panel');
+  var overlay = document.getElementById('detail-overlay');
+  var content = document.getElementById('detail-content');
+  if (!panel || !content) return;
+
+  _renderDetail(model, mode);
+
   panel.classList.add('active');
   overlay.classList.add('active');
+}
+
+// 只刷新抽屉内容、不改变展开/折叠状态（预测页切换模型时保持抽屉状态）
+function refreshDetailPanel(model, mode) {
+  _renderDetail(model, mode);
 }
 
 /**

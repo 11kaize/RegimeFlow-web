@@ -8,7 +8,7 @@
 <script src="vendor/d3.min.js"></script>
 <script src="vendor/ort.min.js"></script>
 <script>window.ort && ort.env && ort.env.wasm && (ort.env.wasm.wasmPaths = window.location.origin + '/vendor/');</script>
-<link rel="stylesheet" href="css/style.css?v=28">
+<link rel="stylesheet" href="css/style.css?v=35">
 <script src="data/i18n.js?v=7"></script>
 <script src="data/model-display-names.js?v=2"></script>
 <script src="js/i18n.js?v=4"></script>
@@ -42,7 +42,7 @@
         One generative model that forecasts the future dynamics of <b>1,050 biological systems</b>
         — and generalizes to systems it has never seen. Instead of hand-crafting a new ODE for every
         system, RegimeFlow learns the shared &ldquo;grammar&rdquo; of biological dynamics from simulated
-        trajectories, and predicts future states together with uncertainty.
+        trajectories, and predicts future states.
       </p>
       <div class="ov-hero-links">
         <a class="ov-btn ov-btn-primary" onclick="setView('predict')" style="cursor:pointer;">🔮 Try the demo</a>
@@ -57,6 +57,26 @@
         <div class="ov-metric"><span class="ov-metric-val">−31%</span><span class="ov-metric-desc">MAE vs. baselines</span></div>
         <div class="ov-metric"><span class="ov-metric-val">+17%</span><span class="ov-metric-desc">CRPS · uncertainty calibration</span></div>
         <div class="ov-metric"><span class="ov-metric-val">96 → 256</span><span class="ov-metric-desc">context → forecast horizon</span></div>
+      </div>
+    </section>
+
+    <section class="ov-benchmark">
+      <h3>Benchmark comparison</h3>
+      <div class="ov-benchmark-grid">
+        <div class="ov-benchmark-item">
+          <div id="figure3-chart" class="figure3-chart"></div>
+          <p class="ov-benchmark-cap">Figure 3. MSE comparison between Ours and five competitive baselines across ten most frequent biological system taxonomies.</p>
+        </div>
+        <div class="ov-benchmark-item ov-benchmark-item-chart">
+          <div id="mse-chart" class="mse-chart"></div>
+          <div class="mse-legend">
+            <span class="mse-legend-item"><span class="mse-legend-swatch" style="background:#4A90D9;"></span><span class="mse-legend-label">Point Forecasting</span></span>
+            <span class="mse-legend-item"><span class="mse-legend-swatch" style="background:#9B59B6;"></span><span class="mse-legend-label">Zero-Shot TSFM</span></span>
+            <span class="mse-legend-item"><span class="mse-legend-swatch" style="background:#6a8299;"></span><span class="mse-legend-label">Probabilistic w/o Regime</span></span>
+            <span class="mse-legend-item"><span class="mse-legend-swatch" style="background:#F39C12;"></span><span class="mse-legend-label">Probabilistic w/ Regime</span></span>
+          </div>
+          <p class="ov-benchmark-cap">Overall MSE across all models (lower is better).</p>
+        </div>
       </div>
     </section>
 
@@ -257,11 +277,13 @@
 <script src="data/bio-domains.js?v=1"></script>
 	<script src="data/bio-processes.js?v=3"></script>
 	<script src="data/model-references.js?v=2"></script>
-<script src="js/components/detail-panel.js?v=8"></script>
+<script src="js/components/detail-panel.js?v=9"></script>
 <script src="js/components/skeleton.js?v=1"></script>
 <script src="js/engine-web.js?v=2"></script>
-<script src="js/prediction.js?v=39"></script>
+<script src="js/prediction.js?v=40"></script>
 <script src="js/taxonomy-pack.js?v=25"></script>
+<script src="js/mse-chart.js?v=5"></script>
+<script src="js/figure3-chart.js?v=1"></script>
 <script>
 // ---- Taxonomy (default page) ----
 (function() {
@@ -286,6 +308,7 @@ function setView(viewName) {
 
   if (viewName === 'taxonomy') setTimeout(function() { resizeTaxonomyPack(); }, 100);
   if (viewName === 'predict') setTimeout(() => window._predictChart && window._predictChart.resize(), 200);
+  if (viewName === 'about') setTimeout(function() { initMseChart(); initFigure3Chart(); }, 50);
 }
 
 document.querySelectorAll('.nav-btn[data-view]').forEach(btn => {

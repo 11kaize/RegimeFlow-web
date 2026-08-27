@@ -590,6 +590,10 @@ function selectModel(i) {
   // Show paper reference / model intro card
   renderModelReference(model);
 
+  // Keep the right-side detail drawer in sync with the selected model
+  // (its content is otherwise frozen to whatever model opened it first).
+  if (typeof refreshDetailPanel === 'function') refreshDetailPanel(model, 'bio');
+
   // Highlight
   document.querySelectorAll('.pw-model-item').forEach(function(el) { el.classList.remove('active'); });
   var mel = document.getElementById('pw-model-' + i);
@@ -1224,7 +1228,8 @@ function openModelPrediction(model) {
   // leaving the full overlay on top of the chart — the user can pop it back
   // out by clicking the handle.
   var handleLabel = document.getElementById('detail-handle-label');
-  if (handleLabel) handleLabel.textContent = getDisplayName(model) || model.name || 'Details';
+  if (handleLabel) handleLabel.textContent = (typeof t === 'function') ? t('tooltip.clickHint') : 'Click for details';
+  if (typeof refreshDetailPanel === 'function') refreshDetailPanel(model, 'bio');
   if (typeof collapseDetailPanel === 'function') collapseDetailPanel();
 
   // Reset to a clean single-model state (model not in the pathway list).
