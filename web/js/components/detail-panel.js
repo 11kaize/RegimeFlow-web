@@ -119,13 +119,32 @@ function openDetailPanel(model, mode) {
 }
 
 /**
+ * After the instant margin offset changes, tell ECharts to re-measure so the
+ * chart fits its new width (the offset no longer animates, so it won't auto).
+ */
+function _refreshPredictLayout() {
+  setTimeout(function() {
+    if (window._predictChart && document.getElementById('view-predict').classList.contains('active')) {
+      window._predictChart.resize();
+    }
+  }, 0);
+}
+
+/**
  * Close the detail side panel and clear bubble selection highlight.
  */
 function closeDetailPanel() {
   var panel   = document.getElementById('detail-panel');
   var overlay = document.getElementById('detail-overlay');
+  var handle  = document.getElementById('detail-handle');
   if (panel)   panel.classList.remove('active');
   if (overlay) overlay.classList.remove('active');
+  if (handle)  handle.style.display = 'none';
+
+  // Reset the prediction-view offsets (expanded or docked)
+  document.body.classList.remove('detail-open');
+  document.body.classList.remove('detail-collapsed');
+  _refreshPredictLayout();
 
   // Clear bubble highlight (set by bubble-chart.js)
   if (window._bubbleSelected) {
@@ -137,7 +156,62 @@ function closeDetailPanel() {
   }
 }
 
+/**
+ * Dock the panel into a slim handle on the right edge (prediction view keeps
+ * the model details reachable without a full overlay in the way).
+ */
+function collapseDetailPanel() {
+  var panel   = document.getElementById('detail-panel');
+  var overlay = document.getElementById('detail-overlay');
+  var handle  = document.getElementById('detail-handle');
+  if (panel)   panel.classList.remove('active');
+  if (overlay) overlay.classList.remove('active');
+  document.body.classList.remove('detail-open');
+  document.body.classList.add('detail-collapsed');
+  if (handle)  handle.style.display = '';
+  _refreshPredictLayout();
+}
+
+/**
+ * Pop the docked panel back out from the right edge.
+ */
+function expandDetailPanel() {
+  var panel   = document.getElementById('detail-panel');
+  var overlay = document.getElementById('detail-overlay');
+  var handle  = document.getElementById('detail-handle');
+  if (panel)   panel.classList.add('active');
+  if (overlay) overlay.classList.remove('active');
+  document.body.classList.remove('detail-collapsed');
+  document.body.classList.add('detail-open');
+  if (handle)  handle.style.display = 'none';
+  _refreshPredictLayout();
+}
+
+/**
+ * Context-aware dismiss: on the prediction view (expanded) collapse back to the
+ * handle; anywhere else, fully close. Used by the × button and Escape key.
+ */
+function dismissDetailPanel() {
+  if (document.body.classList.contains('detail-open')) {
+    collapseDetailPanel();
+  } else {
+    closeDetailPanel();
+  }
+}
+
+// ── Click outside to collapse ───────────────────────────────────
+// On the prediction view (expanded drawer, no dim overlay), clicking anywhere
+// outside the panel docks it back to the handle.
+document.addEventListener('click', function(e) {
+  if (!document.body.classList.contains('detail-open')) return;
+  var panel  = document.getElementById('detail-panel');
+  var handle = document.getElementById('detail-handle');
+  if (panel && panel.contains(e.target)) return;
+  if (handle && handle.contains(e.target)) return;
+  collapseDetailPanel();
+});
+
 // ── Keyboard shortcut ───────────────────────────────────────────
 document.addEventListener('keydown', function(e) {
-  if (e.key === 'Escape') closeDetailPanel();
+  if (e.key === 'Escape') dismissDetailPanel();
 });

@@ -1220,6 +1220,13 @@ function handleCustomPredict() {
 function openModelPrediction(model) {
   if (!model) return;
 
+  // Dock the detail panel into a slim handle on the right edge instead of
+  // leaving the full overlay on top of the chart — the user can pop it back
+  // out by clicking the handle.
+  var handleLabel = document.getElementById('detail-handle-label');
+  if (handleLabel) handleLabel.textContent = getDisplayName(model) || model.name || 'Details';
+  if (typeof collapseDetailPanel === 'function') collapseDetailPanel();
+
   // Reset to a clean single-model state (model not in the pathway list).
   _pwState.currentModel = model;
   _pwState.modelIdx     = -1;   // no list item to highlight

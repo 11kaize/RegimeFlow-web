@@ -96,6 +96,7 @@ body { font-family: var(--font-sans); background: var(--color-bg-body); color: v
 
 /* ===== 导航栏 ===== */
 .navbar { display: flex; justify-content: space-between; align-items: center; padding: var(--space-md) var(--space-3xl); background: var(--color-bg-surface); border-bottom: 1px solid var(--color-border); }
+.nav-left { display: flex; align-items: center; gap: var(--space-md); flex-shrink: 0; }
 .nav-logo { font-size: 20px; font-weight: 700; color: var(--color-text-inverse); text-decoration: none; letter-spacing: -0.3px; flex-shrink: 0; }
 .nav-logo:hover { opacity: 0.85; }
 .nav-brand { display: flex; align-items: center; gap: var(--space-xl); font-size: 20px; font-weight: 700; }
@@ -680,16 +681,43 @@ body { font-family: var(--font-sans); background: var(--color-bg-body); color: v
 .detail-overlay.active { display: block; }
 
 .detail-panel {
-  position: fixed; top: 0; right: -420px;
+  position: fixed; top: 0; right: 0;
   width: var(--detail-panel-width); max-width: calc(100vw - 60px);
   height: 100vh; z-index: 999;
   background: var(--color-bg-surface); border-left: 1px solid var(--color-border);
   box-shadow: var(--shadow-panel);
-  transition: right var(--duration-slow) var(--ease-out);
+  /* Slide via transform (GPU-composited) instead of `right`, so the drawer
+     animation doesn't trigger per-frame layout/reflow. */
+  transform: translateX(calc(100% + 40px));
+  transition: transform var(--duration-slow) var(--ease-out);
   overflow-y: auto; padding: 28px var(--space-3xl) var(--space-5xl);
   display: flex; flex-direction: column; gap: 0;
+  will-change: transform;
 }
-.detail-panel.active { right: 0; }
+.detail-panel.active { transform: translateX(0); }
+
+/* Collapsed drawer handle — a slim tab on the right edge (prediction view only).
+   Clicking it pops the docked panel back out. */
+.detail-handle {
+  position: fixed; right: 0; top: 50%; transform: translateY(-50%);
+  z-index: 1000; width: 44px;
+  display: flex; flex-direction: column; align-items: center; gap: 8px;
+  padding: 16px 10px; background: var(--color-bg-surface);
+  border: 1px solid var(--color-border); border-right: none;
+  border-radius: var(--radius-lg) 0 0 var(--radius-lg);
+  color: var(--color-text-secondary); cursor: pointer; font-size: 13px;
+  box-shadow: var(--shadow-panel);
+  transition: background var(--duration-normal), color var(--duration-normal);
+}
+.detail-handle:hover { background: var(--color-bg-hover); color: var(--color-text-highlight); }
+.detail-handle-chevron { font-size: 18px; line-height: 1; }
+.detail-handle-label { writing-mode: vertical-rl; letter-spacing: 1px; max-height: 40vh; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Shift the prediction view left to make room for the drawer: full panel width
+   when expanded, slim handle width when docked. Applied instantly (no transition)
+   to avoid per-frame reflow — the drawer itself animates via transform above. */
+body.detail-open #view-predict { margin-right: var(--detail-panel-width); }
+body.detail-collapsed #view-predict { margin-right: 44px; }
 
 .detail-close {
   position: absolute; top: var(--space-3xl); right: 18px;
@@ -848,6 +876,8 @@ body { font-family: var(--font-sans); background: var(--color-bg-body); color: v
 
   /* 预测视图 */
   .predict-layout { flex-direction: column; height: auto; }
+  body.detail-open #view-predict { margin-right: 0; }
+  body.detail-collapsed #view-predict { margin-right: 0; }
   .predict-sidebar { width: 100%; min-width: 0; display: flex; flex-wrap: wrap; gap: var(--space-md); padding: var(--space-lg); }
   .predict-sidebar h3 { width: 100%; margin-bottom: var(--space-xs); }
   .system-item { flex: 1 1 140px; margin-bottom: 0; }
@@ -1077,3 +1107,38 @@ body { font-family: var(--font-sans); background: var(--color-bg-body); color: v
   .tax-row-title { font-size: 13px; }
   .tax-row-meta { font-size: 11px; }
 }
+
+/* ===== About RegimeFlow 页 ===== */
+#view-about .overview-container { padding-top: var(--space-2xl); }
+
+#view-about .ov-hero h1 {
+  font-size: 52px;
+  background: linear-gradient(135deg, var(--color-accent), var(--color-green));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* 流程/组件卡片在 about 页更紧凑，保证一行放下 */
+#view-about .ov-method-steps { gap: var(--space-md); }
+#view-about .ov-method-steps .ov-step { min-width: 200px; max-width: 260px; padding: var(--space-2xl) var(--space-xl); }
+#view-about .ov-step-arrow { font-size: 24px; }
+
+@media (max-width: 768px) {
+  #view-about .ov-hero h1 { font-size: var(--space-4xl); }
+  #view-about .ov-method-steps .ov-step { min-width: 0; max-width: 100%; }
+}
+
+/* ── Site footer (visualization credit) ── */
+.site-footer {
+  padding: var(--space-2xl) var(--space-3xl) var(--space-3xl);
+  text-align: center;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+.site-footer a {
+  color: var(--color-text-highlight);
+  text-decoration: none;
+  transition: color var(--duration-normal);
+}
+.site-footer a:hover { color: var(--color-accent-hover); }

@@ -8,7 +8,7 @@
 <script src="vendor/d3.min.js"></script>
 <script src="vendor/ort.min.js"></script>
 <script>window.ort && ort.env && ort.env.wasm && (ort.env.wasm.wasmPaths = window.location.origin + '/vendor/');</script>
-<link rel="stylesheet" href="css/style.css?v=22">
+<link rel="stylesheet" href="css/style.css?v=27">
 <script src="data/i18n.js?v=7"></script>
 <script src="data/model-display-names.js?v=2"></script>
 <script src="js/i18n.js?v=4"></script>
@@ -17,15 +17,95 @@
 
 <!-- Navigation bar -->
 <nav class="navbar">
-  <a href="/" class="nav-logo">RegimeFlow</a>
+  <div class="nav-left">
+    <a href="/" class="nav-logo">RegimeFlow</a>
+    <a href="https://chenm19.github.io/" class="nav-btn" title="Back to homepage">↗ Go back to Chen's lab</a>
+  </div>
   <div class="nav-links">
     <button class="nav-btn active" data-view="taxonomy">Biological Models</button>
     <button class="nav-btn" data-view="predict" data-i18n="nav.predict">Trajectory Prediction</button>
+    <button class="nav-btn" data-view="about">About RegimeFlow</button>
     <a href="https://github.com/hengrao02/RegimeFlow" target="_blank" rel="noopener" class="nav-btn">Code ↗</a>
-    <a href="https://huggingface.co/datasets/HengRao/SysBio-Traj" target="_blank" rel="noopener" class="nav-btn">Data ↗</a>
+    <a href="https://huggingface.co/datasets/HengRao/SysBio-Traj" target="_blank" rel="noopener" class="nav-btn">Benchmark Data ↗</a>
     <a href="https://openreview.net/forum?id=sI3UUkXJxs" target="_blank" rel="noopener" class="nav-btn">Paper ↗</a>
   </div>
 </nav>
+
+<!-- About RegimeFlow view -->
+<div id="view-about" class="view">
+  <div class="overview-container">
+
+    <section class="ov-hero">
+      <span class="ov-hero-badge">Regime-Aware Trajectory Forecasting</span>
+      <h1>RegimeFlow</h1>
+      <p class="ov-hero-desc">
+        One generative model that forecasts the future dynamics of <b>1,050 biological systems</b>
+        — and generalizes to systems it has never seen. Instead of hand-crafting a new ODE for every
+        system, RegimeFlow learns the shared &ldquo;grammar&rdquo; of biological dynamics from simulated
+        trajectories, and predicts future states together with uncertainty.
+      </p>
+      <div class="ov-hero-links">
+        <a class="ov-btn ov-btn-primary" onclick="setView('predict')" style="cursor:pointer;">🔮 Try the demo</a>
+        <a class="ov-btn" href="https://openreview.net/forum?id=sI3UUkXJxs" target="_blank" rel="noopener">Read the paper ↗</a>
+      </div>
+    </section>
+
+    <section class="ov-metrics">
+      <h3>At a glance</h3>
+      <div class="ov-metrics-grid">
+        <div class="ov-metric"><span class="ov-metric-val">1,050</span><span class="ov-metric-desc">ODE models from BioModels</span></div>
+        <div class="ov-metric"><span class="ov-metric-val">−31%</span><span class="ov-metric-desc">MAE vs. baselines</span></div>
+        <div class="ov-metric"><span class="ov-metric-val">+17%</span><span class="ov-metric-desc">CRPS · uncertainty calibration</span></div>
+        <div class="ov-metric"><span class="ov-metric-val">96 → 256</span><span class="ov-metric-desc">context → forecast horizon</span></div>
+      </div>
+    </section>
+
+    <section class="ov-method">
+      <h3>From mechanism models to a universal predictor</h3>
+      <div class="ov-method-steps">
+        <div class="ov-step"><div class="ov-step-icon">🧬</div><h4>BioModels</h4><p>1,050 curated ODE mechanism models, 1–1,000 species each.</p></div>
+        <span class="ov-step-arrow">→</span>
+        <div class="ov-step"><div class="ov-step-icon">📊</div><h4>SysBio-Traj</h4><p>Numerically solved trajectories, 512 time points per system.</p></div>
+        <span class="ov-step-arrow">→</span>
+        <div class="ov-step"><div class="ov-step-icon">🎯</div><h4>RegimeFlow</h4><p>Regime-aware flow matching, trained once across all systems.</p></div>
+        <span class="ov-step-arrow">→</span>
+        <div class="ov-step"><div class="ov-step-icon">🌐</div><h4>Web Demo</h4><p>Past 96 points → future 256 points, with uncertainty.</p></div>
+      </div>
+    </section>
+
+    <section class="ov-method">
+      <h3>Four core ingredients</h3>
+      <div class="ov-method-steps">
+        <div class="ov-step"><div class="ov-step-icon">🏷️</div><h4>Regime Classification</h4><p>Stable / oscillatory / monotonic behavior, injected as conditioning signal C.</p></div>
+        <div class="ov-step"><div class="ov-step-icon">🎛️</div><h4>Regime-Aware Prior</h4><p>Bayesian linear regression with per-regime basis functions replaces standard Gaussian noise.</p></div>
+        <div class="ov-step"><div class="ov-step-icon">➡️</div><h4>Conditional Flow Matching</h4><p>Learns a vector field that pushes prior samples to target trajectories.</p></div>
+        <div class="ov-step"><div class="ov-step-icon">⚡</div><h4>Mamba + AdaLN</h4><p>Linear-complexity state-space backbone with adaptive layer norm.</p></div>
+      </div>
+    </section>
+
+    <section class="ov-bottom">
+      <div class="ov-regime">
+        <h3>Regimes it captures</h3>
+        <div class="ov-regime-cards">
+          <div class="ov-regime-card card-stable"><span class="ov-regime-icon">📉</span><strong>Stable</strong><span>Systems that settle to a steady state</span></div>
+          <div class="ov-regime-card card-osc"><span class="ov-regime-icon">🌊</span><strong>Oscillation</strong><span>Sustained or damped periodic dynamics</span></div>
+          <div class="ov-regime-card card-mono"><span class="ov-regime-icon">📈</span><strong>Monotonic</strong><span>Persistent growth or decay</span></div>
+        </div>
+      </div>
+      <div class="ov-bench">
+        <h3>Why it matters</h3>
+        <p>
+          Biological systems are wildly diverse, yet their large-scale behavior collapses to a handful of regimes.
+          By conditioning on regime and seeding generation with a <b>regime-aware prior</b> instead of Gaussian noise,
+          RegimeFlow shortens the transport distance the model must learn — yielding <b>31% lower MAE</b> and
+          <b>17% better-calibrated uncertainty</b> (CRPS) than baselines, while generalizing to unseen systems with
+          no new equations and no retraining.
+        </p>
+      </div>
+    </section>
+
+  </div>
+</div>
 
 <!-- Taxonomy Circle Packing view (default home) -->
 <div id="view-taxonomy" class="view active">
@@ -148,10 +228,16 @@
 
 <!-- Model detail sidebar -->
 <div id="detail-panel" class="detail-panel">
-  <button class="detail-close" onclick="closeDetailPanel()">&times;</button>
+  <button class="detail-close" onclick="dismissDetailPanel()">&times;</button>
   <div id="detail-content"></div>
 </div>
 <div id="detail-overlay" class="detail-overlay" onclick="closeDetailPanel()"></div>
+
+<!-- Collapsed drawer handle (shown on the prediction view when the panel is docked) -->
+<button id="detail-handle" class="detail-handle" onclick="expandDetailPanel()" title="Show model details" style="display:none;">
+  <span class="detail-handle-chevron">‹</span>
+  <span class="detail-handle-label" id="detail-handle-label">Details</span>
+</button>
 
 <!-- Model detail modal -->
 <div id="modal-overlay" class="modal-overlay">
@@ -171,10 +257,10 @@
 <script src="data/bio-domains.js?v=1"></script>
 	<script src="data/bio-processes.js?v=3"></script>
 	<script src="data/model-references.js?v=2"></script>
-<script src="js/components/detail-panel.js?v=5"></script>
+<script src="js/components/detail-panel.js?v=8"></script>
 <script src="js/components/skeleton.js?v=1"></script>
 <script src="js/engine-web.js?v=2"></script>
-<script src="js/prediction.js?v=37"></script>
+<script src="js/prediction.js?v=39"></script>
 <script src="js/taxonomy-pack.js?v=25"></script>
 <script>
 // ---- Taxonomy (default page) ----
@@ -193,6 +279,10 @@ function setView(viewName) {
 
   var back = document.getElementById('btn-back-to-bubbles');
   if (back) back.style.display = (viewName === 'taxonomy') ? 'none' : '';
+
+  // Leaving the prediction view: fully close any docked detail drawer so its
+  // handle doesn't linger on other views.
+  if (viewName !== 'predict' && typeof closeDetailPanel === 'function') closeDetailPanel();
 
   if (viewName === 'taxonomy') setTimeout(function() { resizeTaxonomyPack(); }, 100);
   if (viewName === 'predict') setTimeout(() => window._predictChart && window._predictChart.resize(), 200);
@@ -214,5 +304,10 @@ function closeModal() {
   document.getElementById('modal-overlay').classList.remove('active');
 }
 </script>
+
+<!-- Footer: visualization credit -->
+<footer class="site-footer">
+  Visualization by <a href="https://chenm19.github.io/" target="_blank" rel="noopener">Kaize Chen</a> · RegimeFlow
+</footer>
 </body>
 </html>
