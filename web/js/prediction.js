@@ -75,9 +75,14 @@ function getPrediction(context, pattern, period, predLen, fullSeries) {
   // A user may select a system before the delayed browser warm-up starts.
   // Load the shared config independently so the real backend remains usable.
   var configPromise = RF ? RF.configReady().catch(fetchConfig) : fetchConfig();
-  return configPromise.then(function(config) {
+  // 共享 config 只用于推导数据集 bounds。拿不到时（部署竞态 / 非 200 / 内容损坏）
+  // 不能把整个预测请求一起废掉 —— 退回无 bounds 预测，bounds 由上下文自行推导。
+  return configPromise.catch(function(error) {
+    console.warn('[RegimeFlow] inference config unavailable; predicting without dataset bounds:', error);
+    return null;
+  }).then(function(config) {
     var bounds = null;
-    if (fullSeries) {
+    if (config && fullSeries) {
       var lo = Infinity, hi = -Infinity;
       fullSeries.forEach(function(x) {
         x = Math.fround(x);
@@ -330,6 +335,10 @@ function renderCategoryComparison() {
   ++_trajectoryLoadId;
   _pwState.loading = false;
   setPredicting(false);
+  // 递增 _trajectoryLoadId 会让进行中的加载提前 return，走上层 ensureMin/hide 永远不会执行；
+  // 覆盖层是全尺寸的，不在这里清掉就会永久盖住对比图（backToList 也走这里）。
+  ChartSkeleton.clear();
+  ChartError.clear();
   updateBackButton();
 
   // Hide single-model legend guide in comparison mode
