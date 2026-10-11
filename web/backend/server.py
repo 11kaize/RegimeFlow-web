@@ -29,7 +29,7 @@ import json
 import mimetypes
 from pathlib import Path
 from contextlib import asynccontextmanager
-from typing import Optional
+from typing import Annotated, Optional
 
 import numpy as np
 from fastapi import FastAPI, HTTPException
@@ -233,7 +233,11 @@ class PredictMultiRequest(BaseModel):
     traj_pattern: int = Field(default=0, ge=0, le=5)
     period: float = Field(default=0.0)
     # Optional per-species values; existing scalar fields remain compatible.
-    traj_patterns: Optional[list[int]] = None
+    # traj_patterns carries the same 0-5 range as the scalar traj_pattern, so an
+    # out-of-range regime is rejected here instead of being forwarded and
+    # silently resolved to (0, 0). `periods` stays unconstrained to match the
+    # unconstrained scalar `period`, which the engine treats leniently.
+    traj_patterns: Optional[list[Annotated[int, Field(ge=0, le=5)]]] = None
     periods: Optional[list[float]] = None
     bounds: Optional[list[Optional[list[float]]]] = None
 
@@ -411,6 +415,14 @@ async def predict_multi(req: PredictMultiRequest):
 
 @app.post('/api/predict/multi/stream')
 def predict_multi_stream(req: PredictMultiRequest):
+    """Stream batch predictions as newline-delimited JSON.
+
+    Every line is an object carrying `index` plus a boolean `ok` discriminator:
+    `{'index': i, 'ok': true, 'result': {...}}` on success, and
+    `{'index': i, 'ok': false, 'error': '...'}` when that species failed. A
+    failed species deliberately carries no `result` key, so clients must branch
+    on `ok` rather than assuming `result` is always present.
+    """
     arguments = _batch_arguments(req)
     _require_regimeflow()
 
@@ -418,10 +430,10 @@ def predict_multi_stream(req: PredictMultiRequest):
         for i, args in enumerate(arguments):
             try:
                 prediction = _predict_regimeflow(**args)
-                yield json.dumps({'index': i, 'result': prediction.model_dump()}, allow_nan=False) + '\n'
+                yield json.dumps({'index': i, 'ok': True, 'result': prediction.model_dump()}, allow_nan=False) + '\n'
             except Exception:
                 logger.exception('RegimeFlow stream prediction failed for species %s', i)
-                yield json.dumps({'index': i, 'error': 'RegimeFlow prediction failed'}) + '\n'
+                yield json.dumps({'index': i, 'ok': False, 'error': 'RegimeFlow prediction failed'}, allow_nan=False) + '\n'
 
     return StreamingResponse(results(), media_type='application/x-ndjson')
 

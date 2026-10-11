@@ -51,6 +51,24 @@ class APIContracts(unittest.TestCase):
             line=json.loads(response.text)
             self.assertIn('error',line);self.assertNotIn('result',line)
 
+    def test_stream_lines_carry_ok_discriminator(self):
+        class Engine:
+            def predict(self,**args):
+                if args['context'][0]==0: raise RuntimeError('injected failure')
+                return np.arange(256,dtype=float)
+        with patch.object(server,'regimeflow_engine',Engine()):
+            response=self.client.post('/api/predict/multi/stream',json={'contexts':[[1,2,3,4],[0,2,3,4]]})
+            ok_line,failed_line=[json.loads(line) for line in response.text.splitlines()]
+            self.assertIs(ok_line['ok'],True);self.assertIn('result',ok_line);self.assertNotIn('error',ok_line)
+            self.assertIs(failed_line['ok'],False);self.assertIn('error',failed_line);self.assertNotIn('result',failed_line)
+
+    def test_out_of_range_traj_patterns_are_rejected(self):
+        for body in [{'contexts':[[1,2,3,4]],'traj_patterns':[99]},
+                     {'contexts':[[1,2,3,4]],'traj_patterns':[-5]},
+                     {'contexts':[[1,2,3,4],[5,6,7,8]],'traj_patterns':[3,99]}]:
+            self.assertEqual(self.client.post('/api/predict/multi',json=body).status_code,422)
+            self.assertEqual(self.client.post('/api/predict/multi/stream',json=body).status_code,422)
+
     def test_proxy_uses_distinct_csv_and_conditions_sources(self):
         record={'X':{'trajectory_type':3,'period':25}}
         def fetch(mid,name,suffix): return json.dumps(record).encode() if suffix=='_conditions.json' else b'time,X\n0,1\n'
