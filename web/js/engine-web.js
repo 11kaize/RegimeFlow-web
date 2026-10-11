@@ -33,9 +33,10 @@ window.RegimeFlowWeb = (function () {
     alpha: 1.0,
     beta: 10.0,
     noise_scale: 0.1,
+    // RegimeFlowCond uses sigmax = sigmin (checkpoint sigm); separate from BLR noise.
+    flow_sigma: 0.001,
     min_variance: 1e-6,
-    // StdScaler minimum_scale（engine_onnx.py 用 StdScalerNP(minimum_scale=1.0)；
-    // 但因 axis=-1 是特征维，variance 恒为 0 → scale 恒等于 1.0，见 predict()）
+    // StdScaler clamps the temporal standard deviation, not the variance.
     min_scale: 1.0,
   };
 
@@ -154,23 +155,24 @@ window.RegimeFlowWeb = (function () {
       for (var k = 0; k < L; k++) ctx[k] = src[src.length - L + k];
     }
 
-    // 2) StdScaler —— 注意：引擎把 context reshape 成 (1,96,1) 后对
-    //    axis=-1（特征维，尺寸=1）做归一化，因此是「恒等」：
-    //    loc = x（逐元素）、scale = 1.0；最终只用到 loc[0,0]=ctx[0]、scale[0,0]=1.0。
-    //    这里 bug-for-bug 复刻，保证浏览器输出与部署后端（engine_onnx.py）一致。
-    var loc = ctx[0];
-    var scale = 1.0;
+    // 2) StdScaler: temporal statistics, matching StdScaler(dim=1) on (1,L,1).
+    var loc = 0;
+    for (var i1 = 0; i1 < L; i1++) loc += ctx[i1];
+    loc /= L;
+    var variance = 0;
+    for (var v1 = 0; v1 < L; v1++) variance += (ctx[v1] - loc) ** 2;
+    var scale = Math.max(Math.sqrt(variance / L), HP.min_scale);
 
     // 3) 条件嵌入 (1,128)
     var condEmb = await _encodeCondition(trajPattern, period);
 
     // 4) BLR 先验（常数基）→ mu = beta/(alpha + beta*N) * Σ(scaled_prior)
-    //    scaled_prior = (prior_ctx - loc) / scale = ctx - ctx[0]
+    //    scaled_prior = (prior_ctx - loc) / scale
     var scaledSum = 0;
     for (var i2 = 0; i2 < L; i2++) scaledSum += (ctx[i2] - loc) / scale;
     var mu = (HP.beta / (HP.alpha + HP.beta * L)) * scaledSum;
 
-    // 5) 构建 x0：上下文 = past_target/scale = ctx（原始值，scale=1.0）
+    // 5) 构建 x0：上下文 = past_target/scale（与原模型一致，不减 loc）
     //           未来先验 = mu + 噪声
     var x0 = new Float32Array(total);
     for (var i3 = 0; i3 < L; i3++) x0[i3] = ctx[i3] / scale;
@@ -178,15 +180,14 @@ window.RegimeFlowWeb = (function () {
       var priorNoise = opts.deterministic ? 0 : HP.noise_scale * randn();
       x0[L + i4] = mu + priorNoise;
     }
-    // flow-matching sigma_max=1 噪声
+    // Additional flow noise uses sigmax = sigmin; BLR noise above stays separate.
     for (var i5 = 0; i5 < total; i5++) {
-      x0[i5] += opts.deterministic ? 0 : randn();
+      x0[i5] += opts.deterministic ? 0 : HP.flow_sigma * randn();
     }
 
     // 6) 欧拉 ODE（denoise_steps 步）
-    //    匹配 Python：x0 是 float32，但欧拉累加用 float64（Python 里
-    //    `xt = xt + dt*vt` 因 dt 是 python float 会把 xt 提升成 float64）。
-    //    backbone 每次仍收 float32（等价 Python 的 x.astype(np.float32)）。
+    //    保留 float64 累加；每次 backbone 输入转为 float32。
+    //    与 Python float32 运算比较时允许浮点舍入误差。
     var dt = 1.0 / HP.denoise_steps;
     var xt = Float64Array.from(x0);
     for (var step = 0; step < HP.denoise_steps; step++) {

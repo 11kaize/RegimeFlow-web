@@ -31,7 +31,7 @@ var API_BASE = (function() {
 // 引擎不可用（onnxruntime-web 缺失 / 模型 404）时回退到后端 /api/predict。
 // 模型 URL 指向「合并单文件」ONNX（外置 .data 已内联进 .onnx）。
 var MODEL_URLS = {
-  backbone:    '/models/backbone.onnx',      // 43MB
+  backbone:    '/models/backbone.onnx?v=inference-parity-1', // 43MB
   condEncoder: '/models/cond_encoder.onnx',  // 400KB
 };
 

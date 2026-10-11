@@ -45,11 +45,13 @@ class StdScalerNP:
         """Compute loc/scale and return normalized x."""
         if observed is None:
             observed = np.ones_like(x)
-        num_obs = np.sum(observed, axis=-1, keepdims=True)
+        # Model tensors are (batch, time, channels): match StdScaler(dim=1).
+        num_obs = np.sum(observed, axis=1, keepdims=True)
         num_obs = np.maximum(num_obs, 1)
-        loc = np.sum(x * observed, axis=-1, keepdims=True) / num_obs
-        variance = np.sum(((x - loc) ** 2) * observed, axis=-1, keepdims=True) / num_obs
-        scale = np.sqrt(np.maximum(variance, self.minimum_scale))
+        loc = np.sum(x * observed, axis=1, keepdims=True) / num_obs
+        centered = (x - loc) * observed
+        variance = np.sum(centered ** 2, axis=1, keepdims=True) / num_obs
+        scale = np.maximum(np.sqrt(variance), self.minimum_scale)
         return loc, scale
 
 
@@ -220,6 +222,8 @@ class RegimeFlowEngineONNX:
         self.prediction_length = hp['prediction_length']
         self.use_condition = hp.get('use_condition', True)
         self.cond_dim = hp.get('cond_dim', 128)
+        # RegimeFlowCond sets sigmax = sigmin; BLR sampling noise is separate.
+        self.flow_sigma = hp.get('sigm', 0.001)
 
         # ── Load ONNX models ──
         # Disable graph optimization: on this 36MB Mamba backbone, ORT_ENABLE_ALL
@@ -329,8 +333,8 @@ class RegimeFlowEngineONNX:
         scaled_context = past_target / scale
         x0 = np.concatenate([scaled_context, x0_fut], axis=1)  # (1, L_total, 1)
 
-        # Add noise (sigma_max = 1 for flow matching)
-        x0 = x0 + np.random.randn(*x0.shape).astype(np.float32)
+        # Additional flow noise, matching RegimeFlowCond's sigmax = sigmin.
+        x0 = x0 + self.flow_sigma * np.random.randn(*x0.shape).astype(np.float32)
 
         # ── Flow Matching ODE (Euler steps) ──
         dt_ode = 1.0 / self.denoise_steps
