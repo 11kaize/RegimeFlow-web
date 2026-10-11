@@ -1,10 +1,17 @@
+from __future__ import annotations
+
 import math, sys
 
 import torch
 from torch import nn
 import torch.nn.functional as F
-from torchtyping import TensorType
-from typeguard import typechecked
+try:
+    from torchtyping import TensorType
+    from typeguard import typechecked
+except ImportError:
+    # Shape annotations are optional for standalone CPU export/inference.
+    def typechecked(function):
+        return function
 
 try:
     from mamba_ssm import Mamba

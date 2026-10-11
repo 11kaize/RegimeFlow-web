@@ -3,10 +3,9 @@ RegimeFlow Backend API Server
 ==============================
 Serves biological trajectory predictions using trained RegimeFlow model.
 
-Supports three prediction backends (auto-selected):
-  1. RegimeFlow (default) — the trained ICML 2026 model, CPU inference
-  2. Chronos-Bolt      — Amazon zero-shot baseline (optional, large)
-  3. Synthetic fallback — lightweight demo mode
+Prediction endpoints return real RegimeFlow results or explicit errors.
+Chronos may optionally load for development, but is never substituted for
+a RegimeFlow prediction.
 
 Usage:
     python server.py
@@ -14,10 +13,12 @@ Usage:
 
 Environment variables:
     REGIMEFLOW_CKPT    — path to seed53_best.ckpt (default: auto-detect)
-    REGIMEFLOW_STEPS   — denoising steps, 4 by default (2-8)
+    REGIMEFLOW_STEPS   — denoising steps, 4 by default
     LOAD_CHRONOS       — set to "true" to load Chronos-Bolt (heavy)
     PORT               — server port (default: 8000)
 """
+
+from __future__ import annotations
 
 import os
 import sys
@@ -211,8 +212,9 @@ class PredictRequest(BaseModel):
     )
     period: float = Field(
         default=0.0,
-        description="Oscillation period (only used when traj_pattern=3)"
+        description="Oscillation period in sample intervals (only used for type 3)"
     )
+    bounds: Optional[list[float]] = Field(default=None, min_length=2, max_length=2)
 
 
 class PredictResponse(BaseModel):
@@ -230,6 +232,10 @@ class PredictMultiRequest(BaseModel):
     prediction_length: int = Field(default=256, ge=1, le=512)
     traj_pattern: int = Field(default=0, ge=0, le=5)
     period: float = Field(default=0.0)
+    # Optional per-species values; existing scalar fields remain compatible.
+    traj_patterns: Optional[list[int]] = None
+    periods: Optional[list[float]] = None
+    bounds: Optional[list[Optional[list[float]]]] = None
 
 
 class PredictMultiResponse(BaseModel):
@@ -252,6 +258,7 @@ def _predict_regimeflow(
     prediction_length: int,
     traj_pattern: int = 0,
     period: float = 0.0,
+    bounds=None,
 ) -> PredictResponse:
     """RegimeFlow inference (CPU, ~400ms with 4 denoise steps)."""
     if regimeflow_engine is None:
@@ -261,11 +268,12 @@ def _predict_regimeflow(
     pred = regimeflow_engine.predict(
         context=context,
         traj_pattern=traj_pattern,
-        period=period,
+        period=period, bounds=bounds,
     )
+    pred = pred[:prediction_length]
     elapsed = (time.perf_counter() - t0) * 1000
 
-    # RegimeFlow returns a single deterministic trajectory (one noise draw).
+    # RegimeFlow returns a single sampled trajectory (one noise draw).
     # The band below is NOT a statistical prediction interval — it is a fixed
     # ±20% reference band scaled by the signal magnitude.
     mean = pred.tolist()
@@ -311,35 +319,6 @@ def _predict_chronos(
     )
 
 
-def _predict_fallback(
-    context: list[float],
-    prediction_length: int,
-) -> PredictResponse:
-    """Synthetic fallback (trend + damped oscillation)."""
-    ctx = np.array(context, dtype=np.float64)
-    n = len(ctx)
-
-    t_ctx = np.arange(n)
-    t_pred = np.arange(n, n + prediction_length)
-
-    tail = max(4, n // 5)
-    slope = (ctx[-1] - ctx[-tail]) / tail
-    intercept = ctx[-1] - slope * (n - 1)
-    trend = intercept + slope * t_pred
-
-    residuals = ctx - (intercept + slope * t_ctx)
-    amplitude = np.std(residuals) * 0.5
-    oscillation = amplitude * np.sin(2 * np.pi * 0.05 * t_pred) * np.exp(-0.005 * (t_pred - n))
-    noise = np.random.default_rng(42).normal(0, amplitude * 0.3, prediction_length)
-
-    mean = (trend + oscillation + noise).tolist()
-    return PredictResponse(
-        predictions=mean, median=mean,
-        lower=[v - amplitude * 0.5 for v in mean],
-        upper=[v + amplitude * 0.5 for v in mean],
-        samples=1, model="fallback-synthetic", inference_time_ms=0.0,
-    )
-
 
 # ── Routes ─────────────────────────────────────────────────────
 
@@ -379,116 +358,109 @@ async def health():
     )
 
 
-@app.post("/api/predict", response_model=PredictResponse)
+def _require_regimeflow():
+    _load_regimeflow_engine()
+    if regimeflow_engine is None:
+        logger.error('Real RegimeFlow inference unavailable: %s', model_info.get('error'))
+        raise HTTPException(503, 'RegimeFlow inference unavailable')
+
+
+def _batch_arguments(req):
+    count = len(req.contexts)
+    if any(len(context) < 4 for context in req.contexts):
+        raise HTTPException(400, 'Each context must have at least 4 observations')
+    for key in ('traj_patterns', 'periods', 'bounds'):
+        values = getattr(req, key)
+        if values is not None and len(values) != count:
+            raise HTTPException(400, f'{key} must match the number of contexts')
+    return [dict(context=ctx, prediction_length=req.prediction_length,
+                 traj_pattern=req.traj_patterns[i] if req.traj_patterns is not None else req.traj_pattern,
+                 period=req.periods[i] if req.periods is not None else req.period,
+                 bounds=req.bounds[i] if req.bounds is not None else None)
+            for i, ctx in enumerate(req.contexts)]
+
+
+@app.post('/api/predict', response_model=PredictResponse)
 async def predict(req: PredictRequest):
-    """Predict future trajectory from a single-species context."""
     if len(req.context) < 4:
-        raise HTTPException(400, "Context must have at least 4 observations.")
-
+        raise HTTPException(400, 'Context must have at least 4 observations')
+    _require_regimeflow()
     try:
-        # Priority: RegimeFlow > Chronos > fallback
-        _load_regimeflow_engine()  # lazy-load on the first prediction
-        if regimeflow_engine is not None:
-            return _predict_regimeflow(
-                req.context, req.prediction_length,
-                traj_pattern=req.traj_pattern, period=req.period,
-            )
-        elif chronos_pipeline is not None:
-            return _predict_chronos(req.context, req.prediction_length)
-        else:
-            return _predict_fallback(req.context, req.prediction_length)
+        return _predict_regimeflow(req.context, req.prediction_length,
+                                  traj_pattern=req.traj_pattern, period=req.period, bounds=req.bounds)
+    except ValueError as exc:
+        logger.warning('Invalid prediction input: %s', exc)
+        raise HTTPException(400, str(exc)) from exc
     except Exception as exc:
-        logger.error(f"Prediction failed: {exc}")
-        # Last resort: fallback
-        try:
-            return _predict_fallback(req.context, req.prediction_length)
-        except Exception:
-            raise HTTPException(500, f"Prediction error: {exc}")
+        logger.exception('RegimeFlow prediction failed')
+        raise HTTPException(500, 'RegimeFlow prediction failed') from exc
 
 
-@app.post("/api/predict/multi", response_model=PredictMultiResponse)
+@app.post('/api/predict/multi', response_model=PredictMultiResponse)
 async def predict_multi(req: PredictMultiRequest):
-    """Batch prediction for multiple species."""
-    results = []
-    _load_regimeflow_engine()  # lazy-load on the first prediction
-    for ctx in req.contexts:
-        try:
-            if regimeflow_engine is not None:
-                r = _predict_regimeflow(
-                    ctx, req.prediction_length,
-                    traj_pattern=req.traj_pattern, period=req.period,
-                )
-            elif chronos_pipeline is not None:
-                r = _predict_chronos(ctx, req.prediction_length)
-            else:
-                r = _predict_fallback(ctx, req.prediction_length)
-            results.append(r)
-        except Exception as exc:
-            logger.error(f"Batch prediction error: {exc}")
-            results.append(_predict_fallback(ctx, req.prediction_length))
-    return PredictMultiResponse(results=results)
+    arguments = _batch_arguments(req)
+    _require_regimeflow()
+    try:
+        return PredictMultiResponse(results=[_predict_regimeflow(**args) for args in arguments])
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except Exception as exc:
+        logger.exception('RegimeFlow batch prediction failed')
+        raise HTTPException(500, 'RegimeFlow batch prediction failed') from exc
 
 
-@app.post("/api/predict/multi/stream")
+@app.post('/api/predict/multi/stream')
 def predict_multi_stream(req: PredictMultiRequest):
-    """Stream batch predictions as newline-delimited JSON.
+    arguments = _batch_arguments(req)
+    _require_regimeflow()
 
-    Each species is predicted sequentially (no thread contention on the free-tier
-    CPU) and yielded as soon as it is ready, so the frontend can draw prediction
-    lines one-by-one instead of waiting for the slowest species and showing a
-    blank chart for the whole batch.
-    """
-    _load_regimeflow_engine()  # lazy-load on the first prediction
-
-    def _iter():
-        for i, ctx in enumerate(req.contexts):
+    def results():
+        for i, args in enumerate(arguments):
             try:
-                if regimeflow_engine is not None:
-                    r = _predict_regimeflow(
-                        ctx, req.prediction_length,
-                        traj_pattern=req.traj_pattern, period=req.period,
-                    )
-                elif chronos_pipeline is not None:
-                    r = _predict_chronos(ctx, req.prediction_length)
-                else:
-                    r = _predict_fallback(ctx, req.prediction_length)
-            except Exception as exc:
-                logger.error(f"Stream prediction error for species {i}: {exc}")
-                r = _predict_fallback(ctx, req.prediction_length)
-            yield json.dumps({"index": i, "result": r.model_dump()}) + "\n"
+                prediction = _predict_regimeflow(**args)
+                yield json.dumps({'index': i, 'result': prediction.model_dump()}, allow_nan=False) + '\n'
+            except Exception:
+                logger.exception('RegimeFlow stream prediction failed for species %s', i)
+                yield json.dumps({'index': i, 'error': 'RegimeFlow prediction failed'}) + '\n'
 
-    return StreamingResponse(_iter(), media_type="application/x-ndjson")
+    return StreamingResponse(results(), media_type='application/x-ndjson')
 
 
-# ── CSV proxy ─────────────────────────────────────────────────
-@app.get("/api/csv/{model_id}/{model_name}")
-def proxy_csv(model_id: str, model_name: str):
-    """Proxy a SysBio-Traj CSV from HuggingFace.
-
-    The frontend used to fetch model trajectories straight from HuggingFace,
-    which is slow/unreliable for users far from HF (e.g. China). Serving it here
-    moves that fetch to Render → HF (fast, both in the US) and returns it to the
-    browser over the same connection it already uses for /api/predict.
-    """
+# Both proxies use the same dataset revision. No condition UI is added.
+def _fetch_dataset_file(model_id, model_name, suffix):
     import urllib.request
     import urllib.parse
-
-    safe_id = urllib.parse.quote(model_id, safe="")
-    safe_name = urllib.parse.quote(model_name, safe="")
-    url = (
-        "https://huggingface.co/datasets/HengRao/SysBio-Traj/resolve/main/Data/"
-        f"{safe_id}/{safe_name}.csv"
-    )
-
+    revision = os.environ.get('SYSBIO_DATASET_REVISION', 'main')
+    safe_id = urllib.parse.quote(model_id, safe='')
+    safe_name = urllib.parse.quote(model_name, safe='')
+    url = ('https://huggingface.co/datasets/HengRao/SysBio-Traj/resolve/'
+           + urllib.parse.quote(revision, safe='') + '/Data/' + safe_id + '/' + safe_name + suffix)
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": "RegimeFlow-web/2.0"})
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            data = resp.read()
+        request = urllib.request.Request(url, headers={'User-Agent': 'RegimeFlow-web/2.0'})
+        with urllib.request.urlopen(request, timeout=30) as response:
+            return response.read()
     except Exception as exc:
-        logger.warning(f"CSV proxy fetch failed for {model_id}/{model_name}: {exc}")
-        raise HTTPException(404, f"CSV not found for {model_id}/{model_name}")
+        logger.warning('Dataset fetch failed for %s/%s%s: %s', model_id, model_name, suffix, exc)
+        raise HTTPException(404, f'Dataset file unavailable for {model_id}/{model_name}{suffix}') from exc
 
-    return Response(content=data, media_type="text/csv")
+
+@app.get('/api/csv/{model_id}/{model_name}')
+def proxy_csv(model_id: str, model_name: str):
+    return Response(content=_fetch_dataset_file(model_id, model_name, '.csv'), media_type='text/csv')
+
+
+@app.get('/api/conditions/{model_id}/{model_name}')
+def proxy_conditions(model_id: str, model_name: str):
+    data = _fetch_dataset_file(model_id, model_name, '_conditions.json')
+    try:
+        records = json.loads(data)
+        if not isinstance(records, dict):
+            raise ValueError('Expected an object keyed by species')
+        encoded = json.dumps(records, allow_nan=False)
+    except (ValueError, UnicodeDecodeError) as exc:
+        logger.warning('Invalid conditions JSON for %s/%s: %s', model_id, model_name, exc)
+        raise HTTPException(502, 'Invalid conditions JSON') from exc
+    return Response(content=encoded, media_type='application/json')
 
 
 # ── Entry point ────────────────────────────────────────────────

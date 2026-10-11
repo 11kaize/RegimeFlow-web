@@ -1,63 +1,58 @@
-/* Deterministic JS reference from engine-web.js, for cross-checking the Python
-   engine. Loads the merged single-file ONNX via onnxruntime-node (native, the
-   same C++ runtime the Python backend uses), so any output difference is a real
-   logic difference in the port, not a runtime difference.
-*/
+/* Real ONNX Runtime Web WASM verification, also runnable offline under Node.
+   This checks the browser runtime build, but does not replace a browser UI run.
+   Run from any directory: node scripts/cross-check/check.cjs */
 'use strict';
-const path = require('path');
-const ort = require('onnxruntime-node');
-
-// Stub `window` so the browser IIFE in engine-web.js binds to the global object.
+const fs = require('node:fs');
+const path = require('node:path');
+const vm = require('node:vm');
+const { pathToFileURL } = require('node:url');
+const assert = require('node:assert/strict');
+const root = path.resolve(__dirname, '../..');
+const output = path.resolve(root, '../Materials/Validation/InferenceParity');
+const ort = require(path.join(root, 'web/vendor/ort.min.js'));
+ort.env.wasm.numThreads = 1;
+ort.env.wasm.wasmPaths = {
+  mjs: pathToFileURL(path.join(root, 'web/vendor/ort-wasm-simd-threaded.mjs')).href,
+  wasm: pathToFileURL(path.join(root, 'web/vendor/ort-wasm-simd-threaded.wasm')).href,
+};
+ort.env.wasm.wasmBinary = fs.readFileSync(path.join(root, 'web/vendor/ort-wasm-simd-threaded.wasm'));
 global.window = global;
 global.ort = ort;
-
-require('../../web/js/engine-web.js');
-const RF = global.RegimeFlowWeb;
-
+vm.runInThisContext(fs.readFileSync(path.join(root, 'web/js/engine-web.js'), 'utf8'));
+const config = JSON.parse(fs.readFileSync(path.join(root, 'web/models/inference-config.json')));
+function flat(value) { return Array.isArray(value) ? value.flat(Infinity) : Array.from(value); }
+function maxDiff(a, b) {
+  a = flat(a); b = flat(b);
+  assert.equal(a.length, b.length);
+  return Math.max(...a.map((x, i) => Math.abs(x - b[i])));
+}
 (async () => {
-  // Reproduce the exact synthetic context used by cross_check_py.py.
-  const N = 120;
-  const context = [];
-  for (let t = 0; t < N; t++) {
-    context.push(0.5 * t + 2.0 * Math.sin((2 * Math.PI * t) / 40.0));
+  assert.equal(await RegimeFlowWeb.load({
+    backbone: fs.readFileSync(path.join(root, 'web/models/backbone.onnx')),
+    condEncoder: fs.readFileSync(path.join(root, 'web/models/cond_encoder.onnx')),
+  }, { config }), true, RegimeFlowWeb.getError());
+  const fixtures = JSON.parse(fs.readFileSync(path.join(output, 'browser_fixtures.json')));
+  const cases = [];
+  for (const sample of fixtures) {
+    const trace = {};
+    const prediction = await RegimeFlowWeb.predict(sample.context, sample.pattern, sample.period,
+      { bounds: sample.bounds, noise: sample.noise, trace });
+    const span = sample.bounds[1] - sample.bounds[0];
+    const result = {
+      id: sample.id, pattern: sample.pattern,
+      prior_max_abs_error: maxDiff(trace.prior_mean, sample.trace.prior_mean),
+      condition_max_abs_error: maxDiff(trace.condition, sample.trace.condition),
+      x0_max_abs_error: maxDiff(trace.x0, sample.trace.x0),
+      velocity_max_abs_error: maxDiff(trace.velocities, sample.trace.velocities),
+      state_max_abs_error: maxDiff(trace.states, sample.trace.states),
+      prediction_max_abs_error_in_range_units: maxDiff(prediction, sample.prediction) / span,
+    };
+    for (const key of Object.keys(result).filter(key => key.includes('error'))) {
+      assert.ok(result[key] < 1e-4, `${sample.id}: ${key}=${result[key]}`);
+    }
+    cases.push(result);
+    console.log(result);
   }
-  const trajPattern = 3;
-  const period = 12.5;
-
-  const ok = await RF.load({
-    backbone: path.resolve(__dirname, '../../web/models/backbone.onnx'),
-    condEncoder: path.resolve(__dirname, '../../web/models/cond_encoder.onnx'),
-  }, { executionProviders: ['cpu'] });
-  if (!ok) {
-    console.error('load failed:', RF.getError());
-    process.exit(1);
-  }
-
-  const pred = await RF.predict(context, trajPattern, period, { deterministic: true });
-
-  // Recompute intermediates the same way for the comparison dump.
-  // 引擎恒等归一化：loc=ctx[0]、scale=1.0（见 engine_onnx.py StdScaler 的 axis 细节）。
-  const ctx = context.slice(-96);
-  const L = 96;
-  const loc = ctx[0];
-  const scale = 1.0;
-  let ssum = 0;
-  for (let i = 0; i < L; i++) ssum += (ctx[i] - loc) / scale;
-  const mu = (10.0 / (1.0 + 10.0 * L)) * ssum;
-
-  const out = {
-    context_head: context.slice(0, 3),
-    traj_pattern: trajPattern,
-    period: period,
-    loc: loc,
-    scale: scale,
-    mu: mu,
-    x0_ctx_head: [ctx[0] / scale, ctx[1] / scale, ctx[2] / scale],
-    x0_ctx_tail: [ctx[93] / scale, ctx[94] / scale, ctx[95] / scale],
-    x0_fut_head: [mu, mu, mu],
-    pred_len: pred.length,
-    pred_head: pred.slice(0, 6),
-    pred_tail: pred.slice(-6),
-  };
-  console.log(JSON.stringify(out, null, 2));
-})().catch((e) => { console.error(e); process.exit(1); });
+  const report = { runtime: 'onnxruntime-web WASM under Node (not a browser UI)', versions: ort.env.versions, cases };
+  fs.writeFileSync(path.join(output, 'wasm_validation.json'), JSON.stringify(report, null, 2) + '\n');
+})().catch(error => { console.error(error); process.exitCode = 1; });

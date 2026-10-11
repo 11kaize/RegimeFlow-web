@@ -1,0 +1,35 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>RegimeFlow browser WASM validation</title>
+<pre id="result">Running actual browser WASM validation…</pre>
+<script src="../web/vendor/ort.min.js"></script>
+<script src="../web/js/engine-web.js"></script>
+<script>
+// Test harness only; never loaded by the production webpage.
+(async function() {
+  try {
+    ort.env.wasm.numThreads = 1;
+    ort.env.wasm.wasmPaths = new URL('../web/vendor/', location.href).href;
+    var fixtures = await fetch('../../Materials/Validation/InferenceParity/browser_fixtures.json').then(r => r.json());
+    var ok = await RegimeFlowWeb.load({
+      backbone: '../web/models/backbone.onnx', condEncoder: '../web/models/cond_encoder.onnx',
+      config: '../web/models/inference-config.json'
+    });
+    if (!ok) throw new Error(RegimeFlowWeb.getError());
+    var cases = [];
+    for (var sample of fixtures) {
+      var trace = {};
+      var prediction = await RegimeFlowWeb.predict(sample.context, sample.pattern, sample.period,
+        { bounds: sample.bounds, noise: sample.noise, trace: trace });
+      var span = sample.bounds[1] - sample.bounds[0];
+      var normalizedError = Math.max(...prediction.map((x, i) => Math.abs(x - sample.prediction[i]))) / span;
+      if (normalizedError >= 1e-4) throw new Error(sample.id + ': normalized error ' + normalizedError);
+      cases.push({ id: sample.id, pattern: sample.pattern, normalized_max_abs_error: normalizedError });
+    }
+    window.validationResult = { status: 'passed', userAgent: navigator.userAgent, versions: ort.env.versions, cases: cases };
+  } catch (error) {
+    window.validationResult = { status: 'failed', error: String(error) };
+  }
+  document.getElementById('result').textContent = JSON.stringify(window.validationResult, null, 2);
+})();
+</script>

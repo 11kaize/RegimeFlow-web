@@ -1,0 +1,4 @@
+# Preserve byte-for-byte upstream CPU reference snapshots and their hashes.
+# Upstream includes whitespace-only lines; retain other whitespace checks.
+tests/reference/mamba_simple_v2_2_6.py whitespace=-blank-at-eol
+tests/reference/selective_scan_v2_2_6.py whitespace=-blank-at-eol

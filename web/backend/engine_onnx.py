@@ -13,12 +13,16 @@ Components:
 Memory: ~150MB RSS (vs 400MB+ for PyTorch)
 """
 
+from __future__ import annotations
+
 import time
 import logging
 from pathlib import Path
 from typing import Optional
 
 import numpy as np
+
+from web.backend.inference_config import load_config, resolve_condition, transform_context
 
 logger = logging.getLogger(__name__)
 
@@ -80,117 +84,71 @@ class BLRPriorNP:
     """Bayesian Linear Regression prior for flow matching trajectory generation."""
 
     def __init__(self, config: Optional[dict] = None):
-        if config is None:
-            config = {}
-        self.alpha = config.get('alpha', 1.0)
-        self.beta = config.get('beta', 20.0)
-        self.noise_scale = config.get('noise_scale', 0.1)
-        self.saturation_scales = config.get('saturation_scales', (0.2, 0.5, 1.0, 2.0, 5.0))
-        self.poly_degree = config.get('poly_degree', 2)
-        self.num_harmonics = config.get('num_harmonics', 4)
-        self.min_variance = config.get('min_variance', 1e-6)
+        settings = load_config()
+        settings.update(config or {})
+        for key in ('alpha', 'beta', 'noise_scale', 'saturation_scales',
+                    'poly_degree', 'num_harmonics', 'min_variance'):
+            setattr(self, key, settings[key])
+        if isinstance(self.saturation_scales, str):
+            import json
+            self.saturation_scales = json.loads(self.saturation_scales)
+        if not isinstance(self.saturation_scales, (list, tuple)) or any(
+                not isinstance(x, (int, float)) or not np.isfinite(x) or x <= 0
+                for x in self.saturation_scales):
+            raise ValueError('Invalid saturation_scales')
 
-    # ── Basis functions ──
-
-    @staticmethod
-    def _constant_basis(times, **_kw):
+    def basis(self, times, past_times, pattern_id, period):
+        times = np.asarray(times, dtype=np.float64)
+        past_times = np.asarray(past_times, dtype=np.float64)
+        delta = times - past_times[-1]
+        t_range = past_times[-1] - past_times[0]
+        if pattern_id in (1, 2):
+            rate = 1.0 / (t_range + 1e-6)
+            return np.column_stack([np.ones(len(times))] +
+                                   [1 - np.exp(-rate * v * delta) for v in self.saturation_scales])
+        if pattern_id == 3:
+            period_time = max(period * t_range / (len(past_times) - 1), t_range * .05)
+            omega = 2 * np.pi / period_time
+            return np.column_stack([np.ones(len(times))] +
+                                   [f(h * omega * times) for h in range(1, self.num_harmonics + 1)
+                                    for f in (np.sin, np.cos)])
+        if pattern_id in (4, 5):
+            # Reference normalizes past and future basis separately.
+            normalized = delta / max(float(np.abs(delta).max()), 1e-6)
+            return np.column_stack([normalized ** d for d in range(self.poly_degree + 1)])
         return np.ones((len(times), 1))
 
     @staticmethod
-    def _linear_basis(times, t_range, **_kw):
-        return np.linspace(-1, 1, len(times)).reshape(-1, 1)
-
-    @staticmethod
-    def _poly_basis(times, t_range, degree=2, **_kw):
-        t_norm = np.linspace(-1, 1, len(times))
-        return np.column_stack([t_norm ** d for d in range(degree + 1)])
-
-    @staticmethod
-    def _saturation_basis(times, t_range, scales=(0.2, 0.5, 1.0, 2.0, 5.0), **_kw):
-        t_norm = np.linspace(-1, 1, len(times))
-        bases = [np.ones(len(times))]
-        for lam in scales:
-            bases.append(1 - np.exp(-lam * (t_norm + 1) / 2))
-        return np.column_stack(bases)
-
-    @staticmethod
-    def _fourier_basis(times, t_range, num_harmonics=4, omega=1.0, **_kw):
-        t_rad = omega * times.reshape(-1, 1)
-        comps = [np.ones(len(times))]
-        for k in range(1, num_harmonics + 1):
-            comps.append(np.sin(k * t_rad).flatten())
-            comps.append(np.cos(k * t_rad).flatten())
-        return np.column_stack(comps)
-
-    # ── BLR Solver ──
-
-    @staticmethod
     def _blr_solve(Phi_past, y_past, Phi_future, alpha, beta, min_var=1e-6):
-        """Closed-form BLR: posterior → predictive mean & variance."""
-        K = Phi_past.shape[-1]
-        # Posterior precision: S^-1 = alpha*I + beta * Phi^T * Phi
-        S_inv = alpha * np.eye(K) + beta * Phi_past.T @ Phi_past
-
+        precision = alpha * np.eye(Phi_past.shape[1]) + beta * Phi_past.T @ Phi_past
+        rhs = beta * Phi_past.T @ np.asarray(y_past).reshape(-1)
         try:
-            L = np.linalg.cholesky(S_inv)
-            # S = L^-T @ L^-1
-            S = np.linalg.inv(L.T) @ np.linalg.inv(L)
+            L = np.linalg.cholesky(precision)
+            mean_weights = np.linalg.solve(L.T, np.linalg.solve(L, rhs))
+            projected = np.linalg.solve(L, Phi_future.T)
+            var = 1 / beta + np.sum(projected ** 2, axis=0)
         except np.linalg.LinAlgError:
-            S = np.linalg.pinv(S_inv)
+            covariance = np.linalg.pinv(precision)
+            mean_weights = covariance @ rhs
+            var = 1 / beta + np.sum((Phi_future @ covariance) * Phi_future, axis=1)
+        return np.sum(Phi_future * mean_weights[None, :], axis=1), np.maximum(var, min_var)
 
-        # Posterior mean: m = beta * S @ Phi^T @ y
-        m = beta * S @ Phi_past.T @ y_past.reshape(-1, 1)
-
-        # Predictive mean: mu = Phi_future @ m
-        mu = (Phi_future @ m).flatten()
-
-        # Predictive variance
-        var_diag = 1.0 / beta + np.diag(Phi_future @ S @ Phi_future.T)
-        var = np.maximum(var_diag, min_var)
-
+    def mean(self, past_times, past_values, future_times, pattern_id=0, period=0.0):
+        pattern_id, period = resolve_condition(pattern_id, period)
+        pp = self.basis(past_times, past_times, pattern_id, period)
+        pf = self.basis(future_times, past_times, pattern_id, period)
+        mu, var = self._blr_solve(pp, past_values, pf, self.alpha, self.beta, self.min_variance)
+        mu += past_values[-1] - mu[0]
+        if not np.isfinite(mu).all():
+            raise ValueError('Nonfinite BLR mean')
         return mu, var
 
-    # ── Generate prior ──
-
-    def generate(self, past_times, past_values, future_times, pattern_id=0, period=0.0):
-        """
-        Generate BLR prior x0 for flow matching.
-
-        NOTE: The prior in RegimeFlow always uses pattern=0 (constant basis),
-        regardless of the actual trajectory condition. The condition encoder
-        handles the pattern-specific shaping through the backbone.
-
-        Args:
-            past_times: (N,) past time indices
-            past_values: (N,) ALREADY SCALED past observation values (z-scored)
-            future_times: (F,) future time indices
-            pattern_id: always 0 for RegimeFlow (constant basis)
-            period: always 0 for RegimeFlow
-
-        Returns:
-            x0: (F,) prior sample
-        """
-        # RegimeFlow always uses constant basis pattern for the prior
-        pattern_id = 0
-        t_all = np.concatenate([past_times, future_times])
-
-        # Constant basis
-        Phi_all = np.ones((len(t_all), 1))
-        Phi_past = Phi_all[:len(past_times)]
-        Phi_future = Phi_all[len(past_times):]
-
-        # Values are already z-scored → no additional normalization needed
-        mu, var = self._blr_solve(
-            Phi_past, past_values, Phi_future,
-            self.alpha, self.beta, self.min_variance
-        )
-
-        # Sample: x0 = mu + epsilon * noise_scale
-        std = np.sqrt(np.maximum(var, self.min_variance))
-        epsilon = np.random.randn(len(future_times))
-        x0 = mu + epsilon * self.noise_scale
-
-        return x0.astype(np.float32)
+    def generate(self, past_times, past_values, future_times, pattern_id=0, period=0.0, noise=None):
+        mu, _ = self.mean(past_times, past_values, future_times, pattern_id, period)
+        epsilon = np.random.randn(len(future_times)) if noise is None else np.asarray(noise)
+        if epsilon.shape != mu.shape or not np.isfinite(epsilon).all():
+            raise ValueError('Invalid BLR noise')
+        return (mu + epsilon * self.noise_scale).astype(np.float32)
 
 
 # ===========================================================================
@@ -212,18 +170,15 @@ class RegimeFlowEngineONNX:
 
         self.denoise_steps = denoise_steps
 
-        # Load hyperparameters from JSON (torch-free!)
-        import json
-        hp_path = str(Path(checkpoint_path).parent / "hyperparams.json")
-        with open(hp_path) as f:
-            hp = json.load(f)
-
+        hp = load_config()
+        self.config = hp
         self.context_length = hp['context_length']
         self.prediction_length = hp['prediction_length']
-        self.use_condition = hp.get('use_condition', True)
-        self.cond_dim = hp.get('cond_dim', 128)
-        # RegimeFlowCond sets sigmax = sigmin; BLR sampling noise is separate.
-        self.flow_sigma = hp.get('sigm', 0.001)
+        self.use_condition = hp['use_condition']
+        self.cond_dim = hp['cond_dim']
+        self.flow_sigma = hp['flow_sigma']
+        if not isinstance(denoise_steps, int) or denoise_steps <= 0:
+            raise ValueError('denoise_steps must be positive')
 
         # ── Load ONNX models ──
         # Disable graph optimization: on this 36MB Mamba backbone, ORT_ENABLE_ALL
@@ -236,6 +191,9 @@ class RegimeFlowEngineONNX:
         self.backbone_session = ort.InferenceSession(
             backbone_onnx, sess_options=_so, providers=['CPUExecutionProvider']
         )
+        metadata = self.backbone_session.get_modelmeta().custom_metadata_map
+        if metadata.get('regimeflow.mamba_projection_layout') != 'x,z;dt,B,C':
+            raise RuntimeError('Legacy/unknown Mamba layout: repair or re-export the backbone')
         logger.info(f"Backbone loaded: inputs={[i.name for i in self.backbone_session.get_inputs()]}")
 
         logger.info(f"Loading ONNX condition encoder from {cond_encoder_onnx} ...")
@@ -245,12 +203,11 @@ class RegimeFlowEngineONNX:
         logger.info(f"Condition encoder loaded")
 
         # ── BLR Prior (NumPy) ──
-        prior_params = dict(hp['prior_params'])
-        prior_params.pop('name', None)
+        prior_params = hp
         self.prior = BLRPriorNP(prior_params)
 
         # ── Scaler (NumPy) ──
-        self.scaler = StdScalerNP(minimum_scale=1.0)
+        self.scaler = StdScalerNP(minimum_scale=hp['min_scale'])
 
         logger.info(f"RegimeFlow ONNX engine ready: ctx={self.context_length}, "
                     f"pred={self.prediction_length}, steps={denoise_steps}")
@@ -281,6 +238,7 @@ class RegimeFlowEngineONNX:
         context: list[float],
         traj_pattern: int = 0,
         period: float = 0.0,
+        *, bounds=None, noise=None, trace=None,
     ) -> np.ndarray:
         """
         Predict future trajectory.
@@ -294,7 +252,9 @@ class RegimeFlowEngineONNX:
             Prediction array of shape (prediction_length,).
         """
         # Prepare context
-        ctx = np.asarray(context, dtype=np.float32).flatten()
+        ctx, bound_min, bound_span = transform_context(context, bounds)
+        traj_pattern, period = resolve_condition(traj_pattern, period)
+        noise = noise or {}
         if len(ctx) < self.context_length:
             pad = self.context_length - len(ctx)
             ctx = np.pad(ctx, (pad, 0), mode='edge')
@@ -325,7 +285,7 @@ class RegimeFlowEngineONNX:
             past_times=past_times,
             past_values=scaled_prior,
             future_times=fut_times,
-            # RegimeFlow always uses pattern=0 for BLR prior
+            pattern_id=traj_pattern, period=period, noise=noise.get("blr"),
         )
         x0_fut = x0_fut.reshape(1, self.prediction_length, 1)
 
@@ -334,7 +294,19 @@ class RegimeFlowEngineONNX:
         x0 = np.concatenate([scaled_context, x0_fut], axis=1)  # (1, L_total, 1)
 
         # Additional flow noise, matching RegimeFlowCond's sigmax = sigmin.
-        x0 = x0 + self.flow_sigma * np.random.randn(*x0.shape).astype(np.float32)
+        flow_noise = noise.get('flow')
+        if flow_noise is None:
+            flow_noise = np.random.randn(*x0.shape)
+        flow_noise = np.asarray(flow_noise, dtype=np.float32)
+        if flow_noise.size != x0.size or not np.isfinite(flow_noise).all():
+            raise ValueError('Invalid flow noise')
+        x0 = x0 + self.flow_sigma * flow_noise.reshape(x0.shape)
+        if trace is not None:
+            mu, _ = self.prior.mean(past_times, scaled_prior, fut_times, traj_pattern, period)
+            trace.update(transformed_context=ctx.tolist(), loc=loc.tolist(), scale=scale.tolist(),
+                         prior_mean=mu.tolist(), prior=x0_fut.reshape(-1).tolist(),
+                         condition=cond_emb.tolist(), x0=x0.tolist(), velocities=[], states=[])
+
 
         # ── Flow Matching ODE (Euler steps) ──
         dt_ode = 1.0 / self.denoise_steps
@@ -344,11 +316,17 @@ class RegimeFlowEngineONNX:
             t_step = step * dt_ode
             vt = self._backbone_velocity(t_step, xt, cond_emb)
             xt = xt + dt_ode * vt
+            if trace is not None:
+                trace['velocities'].append(vt.tolist())
+                trace['states'].append(xt.tolist())
 
         # ── Denormalize and extract future ──
         pred = (xt[0, self.context_length:, 0] * scale[0, 0] + loc[0, 0])
 
-        return pred.astype(np.float64)
+        pred = pred.astype(np.float64) * bound_span + bound_min
+        if not np.isfinite(pred).all():
+            raise ValueError('Nonfinite prediction')
+        return pred
 
 
 # ── Singleton ──────────────────────────────────────────────────

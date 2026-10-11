@@ -12,6 +12,8 @@ Architecture:
         -> Denormalize -> Prediction (256 steps)
 """
 
+from __future__ import annotations
+
 import os
 import sys
 import time
@@ -32,18 +34,18 @@ import torch.nn.functional as F
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Pure PyTorch Mamba v2 — CPU compatible
+# Pure PyTorch Mamba (mamba_ssm 2.2.6) — CPU compatible
 # ---------------------------------------------------------------------------
 
 class MambaPy(nn.Module):
-    """Pure PyTorch Mamba v2 — matches mamba_ssm==2.2.6 weight layout."""
+    """Pure PyTorch Mamba (mamba_ssm 2.2.6) — matches mamba_ssm==2.2.6 weight layout."""
 
     def __init__(self, d_model: int, d_state: int = 16, d_conv: int = 4, expand: int = 2):
         super().__init__()
         self.d_model = d_model
         self.d_state = d_state
         self.d_inner = int(d_model * expand)
-        self.dt_rank = max(1, d_model // 16)
+        self.dt_rank = max(1, (d_model + 15) // 16)
 
         self.in_proj = nn.Linear(d_model, self.d_inner * 2, bias=False)
         self.conv1d = nn.Conv1d(self.d_inner, self.d_inner, kernel_size=d_conv,
@@ -79,15 +81,15 @@ class MambaPy(nn.Module):
     def forward(self, x):
         B, L, D = x.shape
         zx = self.in_proj(x)
-        z, xp = zx[:, :, :self.d_inner], zx[:, :, self.d_inner:]
+        xp, z = zx[:, :, :self.d_inner], zx[:, :, self.d_inner:]
 
         xp = self.conv1d(xp.transpose(1, 2))[:, :, :L].transpose(1, 2)
         xp_act, z_act = self.act_fn(xp), self.act_fn(z)
 
         x_out = self.x_proj(xp_act)
-        B_p = x_out[:, :, :self.d_state]
-        C_p = x_out[:, :, self.d_state:2 * self.d_state]
-        dt = F.softplus(self.dt_proj(x_out[:, :, 2 * self.d_state:]))
+        B_p = x_out[:, :, self.dt_rank:self.dt_rank + self.d_state]
+        C_p = x_out[:, :, self.dt_rank + self.d_state:]
+        dt = F.softplus(self.dt_proj(x_out[:, :, :self.dt_rank]))
 
         y = self._selective_scan(xp_act, dt, self.A_log, B_p, C_p, self.D)
         return self.out_proj(y * z_act)
@@ -106,7 +108,20 @@ sys.modules['mamba_ssm'] = _FakeMambaSSM()
 
 # Now safe to import
 from models.FlowMatching.RegimeFlow.RegimeFlow_base import RMSNorm
-from models.FlowMatching.RegimeFlow.arch._base import StdScaler
+from web.backend.inference_config import load_config, resolve_condition, transform_context
+
+
+class StdScaler(nn.Module):
+    """Inference-only copy of arch/_base.StdScaler; no training dependencies."""
+    def __init__(self, dim=1, keepdim=True, minimum_scale=1):
+        super().__init__()
+        self.dim, self.keepdim, self.minimum_scale = dim, keepdim, minimum_scale
+
+    def forward(self, x, observed):
+        count = observed.sum(dim=self.dim, keepdim=self.keepdim).clamp(min=1)
+        loc = (x * observed).sum(dim=self.dim, keepdim=self.keepdim) / count
+        variance = (((x - loc) * observed) ** 2).sum(dim=self.dim, keepdim=self.keepdim) / count
+        return x, loc, variance.sqrt().clamp(min=self.minimum_scale)
 from models.FlowMatching.RegimeFlow.arch.bio_cond_layers import ConditionEncoder
 from models.FlowMatching.RegimeFlow.arch.source_BLR import (
     BLRTemplatePriorGenerator, BLRPriorConfig
@@ -149,6 +164,8 @@ class RegimeFlowEngine:
 
     def __init__(self, checkpoint_path: str, denoise_steps: int = 4):
         self.denoise_steps = denoise_steps
+        self.config = load_config()
+        self.flow_sigma = self.config['flow_sigma']
 
         logger.info(f"Loading RegimeFlow from {checkpoint_path} ...")
         t0 = time.time()
@@ -177,7 +194,7 @@ class RegimeFlowEngine:
         # --- Build components ---
 
         # Scaler
-        self.scaler = StdScaler(dim=1, keepdim=True, minimum_scale=1)
+        self.scaler = StdScaler(dim=1, keepdim=True, minimum_scale=self.config['min_scale'])
 
         # Condition Encoder
         self.use_condition = hp.get('use_condition', True)
@@ -211,24 +228,15 @@ class RegimeFlowEngine:
         )
 
         # BLR Prior
-        prior_params = dict(hp['prior_params'])
-        prior_type = prior_params.pop('name', 'BLRTemplatePriorGenerator')
-        blr_config = BLRPriorConfig(
-            alpha=prior_params.get('alpha', 1.0),
-            beta=prior_params.get('beta', 20.0),
-            noise_scale=prior_params.get('noise_scale', 0.1),
-            saturation_rate=prior_params.get('saturation_rate', 3.0),
-            slope_window=prior_params.get('slope_window', 10),
-            min_variance=prior_params.get('min_variance', 1e-6),
-            num_harmonics=prior_params.get('num_harmonics', 4),
-            saturation_scales=tuple(prior_params.get('saturation_scales', (0.2, 0.5, 1.0, 2.0, 5.0))),
-        )
+        from dataclasses import fields
+        prior_params = {f.name: self.config[f.name] for f in fields(BLRPriorConfig) if f.name in self.config}
+        blr_config = BLRPriorConfig(**prior_params)
         self.prior = BLRTemplatePriorGenerator(blr_config)
 
         # --- Load weights ---
         bb_weights = {k.replace('backbone.', ''): v for k, v in weights.items()
                       if k.startswith('backbone.')}
-        self.backbone.load_state_dict(bb_weights, strict=False)
+        self.backbone.load_state_dict(bb_weights, strict=True)
 
         if self.condition_encoder is not None:
             ce_weights = {k.replace('condition_encoder.', ''): v for k, v in weights.items()
@@ -251,6 +259,7 @@ class RegimeFlowEngine:
         context: list[float],
         traj_pattern: int = 0,
         period: float = 0.0,
+        *, bounds=None, noise=None,
     ) -> np.ndarray:
         """
         Predict future trajectory.
@@ -267,7 +276,9 @@ class RegimeFlowEngine:
             Prediction array of shape (prediction_length,).
         """
         # Prepare context
-        ctx = np.asarray(context, dtype=np.float32).flatten()
+        ctx, bound_min, bound_span = transform_context(context, bounds)
+        traj_pattern, period = resolve_condition(traj_pattern, period)
+        noise = noise or {}
         if len(ctx) < self.context_length:
             # Pad with replication at the beginning
             pad = self.context_length - len(ctx)
@@ -299,20 +310,28 @@ class RegimeFlowEngine:
         ).unsqueeze(0)
 
         scaled_prior = (past_target[:, -self.context_length:] - loc) / scale
-        x0_fut, _, _ = self.prior(
+        x0_fut, mu, _ = self.prior(
             past_times=past_times,
             past_values=scaled_prior[:, :, 0],
             future_times=fut_times,
-            pattern_ids=torch.zeros(1, dtype=torch.long),
-            period=torch.zeros(1),
+            pattern_ids=torch.tensor([traj_pattern], dtype=torch.long),
+            period=torch.tensor([period], dtype=torch.float32),
         )
+        if 'blr' in noise:
+            epsilon = torch.as_tensor(noise['blr'], dtype=torch.float32).reshape(1, -1)
+            if epsilon.shape != mu.shape or not torch.isfinite(epsilon).all():
+                raise ValueError('Invalid BLR noise')
+            x0_fut = mu + self.prior.noise_scale * epsilon
         x0_fut = x0_fut.unsqueeze(-1)
 
         scaled_context = past_target[:, -self.context_length:] / scale
         x0 = torch.cat([scaled_context, x0_fut], dim=1)
 
-        # Add noise (sigma_max = 1)
-        x0 = x0 + torch.randn_like(x0)
+        # Same small flow noise as the checkpoint; BLR noise is separate.
+        epsilon = torch.as_tensor(noise['flow'], dtype=torch.float32).reshape(x0.shape) if 'flow' in noise else torch.randn_like(x0)
+        if not torch.isfinite(epsilon).all():
+            raise ValueError('Invalid flow noise')
+        x0 = x0 + self.flow_sigma * epsilon
 
         # Flow Matching ODE (denoise_steps Euler steps)
         dt_ode = 1.0 / self.denoise_steps
@@ -327,7 +346,7 @@ class RegimeFlowEngine:
 
         # Denormalize and extract future
         pred = (xt[:, self.context_length:] * scale + loc).squeeze().numpy()
-        return pred.astype(np.float64)
+        return pred.astype(np.float64) * bound_span + bound_min
 
 
 # ---------------------------------------------------------------------------

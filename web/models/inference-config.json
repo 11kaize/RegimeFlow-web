@@ -1,0 +1,31 @@
+{
+  "context_length": 96,
+  "prediction_length": 256,
+  "cond_dim": 128,
+  "use_condition": true,
+  "alpha": 1.0,
+  "beta": 10.0,
+  "noise_scale": 0.1,
+  "min_variance": 1e-06,
+  "num_harmonics": 3,
+  "saturation_scales": [
+    0.2,
+    1.0,
+    5.0
+  ],
+  "poly_degree": 2,
+  "flow_sigma": 0.001,
+  "min_scale": 1.0,
+  "denoise_steps": 4,
+  "checkpoint_num_steps": 32,
+  "transform": "minmax",
+  "dataset_clip": [
+    0,
+    1000000000.0
+  ],
+  "min_relative_range": 0.001,
+  "min_unique_ratio": 0.01,
+  "checkpoint_sha256": "948227ca0a63c87fab92d5f3a7797361ebf0e69156d2a247a1d3b4326af2daf3",
+  "schema_version": 1,
+  "model_version": "inference-parity-2"
+}

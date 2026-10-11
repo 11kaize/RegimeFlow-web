@@ -12,7 +12,11 @@
     "slope_window": 10,
     "min_variance": 1e-06,
     "num_harmonics": 3,
-    "saturation_scales": "[0.2, 1.0, 5.0]"
+    "saturation_scales": [
+      0.2,
+      1.0,
+      5.0
+    ]
   },
   "matching": "random",
   "normalization": "zscore",

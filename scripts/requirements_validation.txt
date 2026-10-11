@@ -1,0 +1,9 @@
+# Development/reference/export only; production keeps web/backend/requirements.txt.
+numpy>=1.26
+onnx>=1.19
+onnxruntime>=1.19
+torch>=2.8
+omegaconf>=2.3
+einops>=0.8
+fastapi>=0.115
+httpx>=0.28

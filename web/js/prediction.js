@@ -31,7 +31,8 @@ var API_BASE = (function() {
 // 引擎不可用（onnxruntime-web 缺失 / 模型 404）时回退到后端 /api/predict。
 // 模型 URL 指向「合并单文件」ONNX（外置 .data 已内联进 .onnx）。
 var MODEL_URLS = {
-  backbone:    '/models/backbone.onnx?v=inference-parity-1', // 43MB
+  backbone:    '/models/backbone.onnx?v=inference-parity-2', // 43MB
+  config: '/models/inference-config.json?v=inference-parity-2',
   condEncoder: '/models/cond_encoder.onnx',  // 400KB
 };
 
@@ -42,10 +43,11 @@ function _modelUrl(p) {
 }
 
 // 后端单物种预测（回退路径），返回 Promise<number[]>
-function backendPredict(context, pattern, period, predLen) {
+function backendPredict(context, pattern, period, predLen, bounds) {
   var body = { context: context, prediction_length: predLen || 256 };
   if (pattern !== undefined) body.traj_pattern = pattern;
   if (period !== undefined) body.period = period;
+  if (bounds) body.bounds = bounds;
   return fetch(API_BASE + '/api/predict', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -53,23 +55,84 @@ function backendPredict(context, pattern, period, predLen) {
   }).then(function(r) {
     if (!r.ok) throw new Error('HTTP ' + r.status);
     return r.json();
-  }).then(function(resp) { return resp.predictions; });
+  }).then(function(resp) {
+    if (resp.model !== 'regimeflow' || !Array.isArray(resp.predictions) || !resp.predictions.length || resp.predictions.some(function(v) { return typeof v !== 'number' || !Number.isFinite(v); })) {
+      throw new Error('Backend did not return a real RegimeFlow prediction');
+    }
+    return resp.predictions.slice(0, predLen || resp.predictions.length);
+  });
 }
 
 // 预测一个上下文序列 → Promise<number[]>。浏览器推理优先，失败回退后端。
-function getPrediction(context, pattern, period, predLen) {
+function getPrediction(context, pattern, period, predLen, fullSeries) {
   if (pattern === undefined) pattern = 0;
   if (period === undefined) period = 0;
   var RF = window.RegimeFlowWeb;
-  if (RF) {
+  function fetchConfig() { return fetch(_modelUrl(MODEL_URLS.config)).then(function(r) {
+    if (!r.ok) throw new Error('Inference config HTTP ' + r.status);
+    return r.json();
+  }); }
+  // A user may select a system before the delayed browser warm-up starts.
+  // Load the shared config independently so the real backend remains usable.
+  var configPromise = RF ? RF.configReady().catch(fetchConfig) : fetchConfig();
+  return configPromise.then(function(config) {
+    var bounds = null;
+    if (fullSeries) {
+      var lo = Infinity, hi = -Infinity;
+      fullSeries.forEach(function(x) {
+        x = Math.fround(x);
+        if (!Number.isFinite(x) || Math.abs(x) > config.dataset_clip[1]) throw new Error('Invalid dataset series');
+        x = Math.max(config.dataset_clip[0], x);
+        lo = Math.min(lo, x); hi = Math.max(hi, x);
+      });
+      bounds = [lo, hi];
+    }
+    if (!RF) return backendPredict(context, pattern, period, predLen, bounds);
     return RF.ready().then(function(ok) {
-      if (ok) return RF.predict(context, pattern, period);
-      throw new Error(RF.getError() || 'browser engine unavailable');
-    }).catch(function() {
-      return backendPredict(context, pattern, period, predLen);
+      if (!ok) throw new Error(RF.getError() || 'browser engine unavailable');
+      return RF.predict(context, pattern, period, { bounds: bounds });
+    }).then(function(pred) { return pred.slice(0, predLen || pred.length); }).catch(function(error) {
+      console.warn('[RegimeFlow] browser inference failed; trying real backend:', error);
+      return backendPredict(context, pattern, period, predLen, bounds);
+    });
+  });
+}
+
+var _conditionCache = {};
+var _trajectoryLoadId = 0;
+var _predictionId = 0;
+
+function loadSpeciesConditions(model) {
+  var key = model.id + '/' + model.name;
+  if (!_conditionCache[key]) {
+    _conditionCache[key] = fetch(API_BASE + '/api/conditions/' + encodeURIComponent(model.id) + '/' + encodeURIComponent(model.name)).then(function(r) {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    }).then(function(records) {
+      if (!records || typeof records !== 'object' || Array.isArray(records)) throw new Error('Invalid conditions JSON');
+      return records;
+    }).catch(function(error) {
+      console.warn('[RegimeFlow] ' + key + ': conditions unavailable; using defaults', error);
+      return null;
     });
   }
-  return backendPredict(context, pattern, period, predLen);
+  return _conditionCache[key];
+}
+
+function conditionForSpecies(model, species) {
+  var record = (_pwState.conditions || {})[species];
+  var reason = null, pattern = 0, period = 0;
+  if (!record) reason = 'species condition record missing';
+  else if (!Number.isInteger(record.trajectory_type) || record.trajectory_type < 0 || record.trajectory_type > 5) reason = 'invalid trajectory type';
+  else {
+    pattern = record.trajectory_type;
+    var valid = typeof record.period === 'number' && Number.isFinite(record.period) && record.period >= 0;
+    if (pattern === 3 && (!valid || record.period <= 0)) { pattern = 0; reason = 'missing or invalid oscillation period'; }
+    else if (!valid) reason = 'missing or invalid period; using zero period';
+    else period = record.period;
+  }
+  if (reason) console.warn('[RegimeFlow] ' + model.id + '/' + species + ': ' + reason, { traj_pattern: pattern, period: period });
+  return { pattern: pattern, period: period };
 }
 
 // ── State ──────────────────────────────────────────────────────
@@ -82,6 +145,7 @@ var _pwState = {
   gtData:        null,    // ground-truth data array (current species)
   gtTime:        null,    // ground-truth time array
   ctxTime:       null,    // context time array
+  conditions:    null,
   fullColumns:   null,    // all parsed CSV columns (cached for species switching)
   fullTime:      null,    // full time array from CSV
   currentModel:  null,    // currently loaded model
@@ -262,6 +326,10 @@ function renderCategoryComparison() {
   if (!window._predictChart) return;
 
   _activeViewMode = 'compare';
+  ++_predictionId;
+  ++_trajectoryLoadId;
+  _pwState.loading = false;
+  setPredicting(false);
   updateBackButton();
 
   // Hide single-model legend guide in comparison mode
@@ -323,6 +391,10 @@ function updateBackButton() {
 
 // Exit the single-model view and return to the category comparison / list.
 function backToList() {
+  ++_predictionId;
+  ++_trajectoryLoadId;
+  _pwState.loading = false;
+  setPredicting(false);
   _pwState.modelIdx = -1;
   _pwState.currentModel = null;
   _pwState.spIdx = 0;
@@ -368,6 +440,7 @@ function initPrediction() {
       RegimeFlowWeb.load({
         backbone: _modelUrl(MODEL_URLS.backbone),
         condEncoder: _modelUrl(MODEL_URLS.condEncoder),
+        config: _modelUrl(MODEL_URLS.config),
         onProgress: function(received, total) {
           var pct = Math.floor((received / total) * 100);
           if (pct !== _lastPct) { _lastPct = pct; setModelDownloading(pct / 100); }
@@ -496,6 +569,8 @@ function initPrediction() {
     tab.addEventListener('click', function() {
       document.querySelectorAll('.input-tab').forEach(function(t) { t.classList.remove('active'); });
       tab.classList.add('active');
+      ++_predictionId;
+      setPredicting(false);
       var showPathway = tab.dataset.tab === 'models';
       document.getElementById('system-list').style.display = showPathway ? '' : 'none';
       document.getElementById('custom-input-panel').style.display = showPathway ? 'none' : '';
@@ -616,8 +691,11 @@ function selectModel(i) {
 // Load pathway trajectory from HuggingFace
 // ================================================================
 function loadPathwayTrajectory(model) {
-  if (_pwState.loading) return;
+  var loadId = ++_trajectoryLoadId;
+  ++_predictionId;
   _pwState.loading = true;
+  _pwState.conditions = null;
+  _pwState.fullColumns = null;
 
   _activeViewMode = 'pathway';
   updateBackButton();
@@ -642,10 +720,14 @@ function loadPathwayTrajectory(model) {
   var csvUrl = API_BASE + '/api/csv/'
     + encodeURIComponent(model.id) + '/' + encodeURIComponent(model.name);
 
-  fetch(csvUrl).then(function(resp) {
+  var csvPromise = fetch(csvUrl).then(function(resp) {
     if (!resp.ok) throw new Error('HTTP ' + resp.status);
     return resp.text();
-  }).then(function(csvText) {
+  });
+  Promise.all([csvPromise, loadSpeciesConditions(model)]).then(function(loaded) {
+    if (loadId !== _trajectoryLoadId) return;
+    var csvText = loaded[0];
+    _pwState.conditions = loaded[1];
     // Parse CSV
     var lines = csvText.trim().split('\n');
     var headers = lines[0].split(',').map(function(h) { return h.trim(); });
@@ -715,14 +797,16 @@ function loadPathwayTrajectory(model) {
 
     // Ensure skeleton shows for at least _skelMinMs, then render a single species
     ChartSkeleton.ensureMin(function() {
+      if (loadId !== _trajectoryLoadId) return;
       ChartSkeleton.hide();  // fade out skeleton
       // Small delay so fade starts before chart renders
       setTimeout(function() {
-        redrawPathwayChart();
+        if (loadId === _trajectoryLoadId) redrawPathwayChart();
       }, 100);
     });
 
   }).catch(function(err) {
+    if (loadId !== _trajectoryLoadId) return;
     _pwState.loading = false;
     console.error('Failed to load trajectory:', err);
 
@@ -733,7 +817,7 @@ function loadPathwayTrajectory(model) {
     ChartSkeleton.ensureMin(function() {
       ChartSkeleton.hide();
       setTimeout(function() {
-        ChartError.show(model, err.message);
+        if (loadId === _trajectoryLoadId) ChartError.show(model, err.message);
       }, 200);
     });
 
@@ -746,23 +830,14 @@ function loadPathwayTrajectory(model) {
   });
 }
 
-// ── Regime pattern mapping (for RegimeFlow backend) ────────────
-var REGIME_TO_PATTERN = {
-  directly_stable: 0,
-  inc_stable:      1,
-  dec_stable:      2,
-  oscillation:     3,
-  increasing:      4,
-  decreasing:      5
-};
-
 // ================================================================
 // Prediction attempt
 // ================================================================
-function attemptPrediction(ctxData, ctxTime, gtTime, gtData, spName, modelName, modelRegime) {
-  // Determine regime conditions from model metadata
-  var pattern = REGIME_TO_PATTERN[modelRegime] || 0;
-  var period = (modelRegime === 'oscillation') ? 12.5 : 0.0;
+function attemptPrediction(ctxData, ctxTime, gtTime, gtData, spName, modelName, model) {
+  var requestId = ++_predictionId;
+  var condition = conditionForSpecies(model, spName);
+  var pattern = condition.pattern, period = condition.period;
+  var fullSeries = _pwState.fullColumns[spName];
   var predLen = Math.min(256, gtData.length);
 
   // 浏览器模型还在下载时给个加载提示
@@ -770,11 +845,14 @@ function attemptPrediction(ctxData, ctxTime, gtTime, gtData, spName, modelName, 
   if (RF && !RF.isLoaded() && !RF.getError()) setBackendWaking(true);
 
   setPredicting(true);
-  getPrediction(ctxData, pattern, period, predLen).then(function(pred) {
+  getPrediction(ctxData, pattern, period, predLen, fullSeries).then(function(pred) {
+    if (requestId !== _predictionId) return;
     setBackendWaking(false);
     setPredicting(false);
     drawChart(ctxTime, ctxData, gtTime, gtData, { predictions: pred }, spName, modelName);
-  }).catch(function() {
+  }).catch(function(error) {
+    if (requestId !== _predictionId) return;
+    console.error("[RegimeFlow] prediction failed", error);
     setBackendWaking(false);
     setPredicting(false);
     drawChart(ctxTime, ctxData, gtTime, gtData, { _pending: true }, spName, modelName);
@@ -863,7 +941,7 @@ function redrawPathwayChart() {
   // Update chart immediately
   var displayName = getDisplayName(model);
   drawChart(ctxTime, ctxData, gtTime, gtData, null, spName, displayName);
-  attemptPrediction(ctxData, ctxTime, gtTime, gtData, spName, displayName, model.regime);
+  attemptPrediction(ctxData, ctxTime, gtTime, gtData, spName, displayName, model);
 }
 
 // ================================================================
@@ -872,6 +950,7 @@ function redrawPathwayChart() {
 function renderAllSpecies() {
   if (!_pwState.currentModel || !_pwState.fullColumns) return;
   _pwState.overlayAll = true;
+  var requestId = ++_predictionId;
 
   var model       = _pwState.currentModel;
   var spNames     = _pwState.spNames;
@@ -899,8 +978,6 @@ function renderAllSpecies() {
   // Predict each species sequentially, drawing each line as it completes
   // (progressive). 浏览器推理优先（引擎已在 initPrediction 预热）；引擎不可用
   // 时逐物种回退后端 /api/predict。顺序执行避免免费层 CPU 多路并发互踩。
-  var pattern = REGIME_TO_PATTERN[model.regime] || 0;
-  var period  = (model.regime === 'oscillation') ? 12.5 : 0.0;
   var predLen = Math.min(256, time.length - ctxLen);
 
   var predictions = {};   // filled progressively as each species completes
@@ -911,14 +988,19 @@ function renderAllSpecies() {
   setPredicting(true);
   var spIdx2 = 0;
   function nextSpecies() {
+    if (requestId !== _predictionId) return;
     if (spIdx2 >= shown.length) { setPredicting(false); return; }
     var sp = shown[spIdx2];
-    getPrediction(speciesCtx[sp], pattern, period, predLen).then(function(pred) {
+    var condition = conditionForSpecies(model, sp);
+    getPrediction(speciesCtx[sp], condition.pattern, condition.period, predLen, columns[sp]).then(function(pred) {
+      if (requestId !== _predictionId) return;
       predictions[sp] = pred;
       drawProgress();
       spIdx2++;
       nextSpecies();
-    }).catch(function() {
+    }).catch(function(error) {
+      if (requestId !== _predictionId) return;
+      console.error("[RegimeFlow] species prediction failed", sp, error);
       spIdx2++;
       nextSpecies();
     });
@@ -1206,11 +1288,15 @@ function handleCustomPredict() {
   }
   drawChart(ctxTime, ctxData, gtTime, gtData, null, 'Custom', 'Custom Data');
 
+  var requestId = ++_predictionId;
+  console.warn('[RegimeFlow] Custom Data: no conditions supplied; using type 0, period 0; minmax bounds use observed context only');
   getPrediction(ctxData, 0, 0, Math.min(256, gtData.length)).then(function(pred) {
+    if (requestId !== _predictionId) return;
     drawChart(ctxTime, ctxData, gtTime, gtData, { predictions: pred }, 'Custom', 'Custom Data');
     statusEl.textContent = 'Prediction complete';
     statusEl.className = 'custom-status success';
   }).catch(function(e) {
+    if (requestId !== _predictionId) return;
     statusEl.textContent = 'Backend unavailable · showing ground truth only';
     statusEl.className = 'custom-status error';
   });

@@ -57,19 +57,38 @@ class PredictionPreprocessingTests(unittest.TestCase):
         engine, captured = self.make_engine()
         with patch('numpy.random.randn', side_effect=lambda *shape: np.zeros(shape)):
             prediction = engine.predict([0., 4.] * 48)
-        # loc=2, scale=2; original RegimeFlow keeps context / scale, while
-        # centering the prior observations and adding loc back to predictions.
-        np.testing.assert_allclose(captured[0][0, :2, 0], [0., 2.])
-        np.testing.assert_allclose(captured[0][0, 96:, 0], 0., atol=1e-7)
-        np.testing.assert_allclose(prediction, 2., atol=1e-7)
+        # Raw [0,4] -> minmax [0,1], loc=.5 and scale=1.
+        # Context remains uncentered; the continuous prior starts at last value.
+        np.testing.assert_allclose(captured[0][0, :2, 0], [0., 1.])
+        np.testing.assert_allclose(captured[0][0, 96:, 0], .5, atol=1e-7)
+        np.testing.assert_allclose(prediction, 4., atol=1e-7)
 
     def test_flow_noise_is_small_and_separate_from_blr_noise(self):
         engine, captured = self.make_engine()
         with patch('numpy.random.randn', side_effect=lambda *shape: np.ones(shape)):
-            prediction = engine.predict([5.] * 96)
-        np.testing.assert_allclose(captured[0][0, :96, 0], 5.001, atol=1e-6)
+            prediction = engine.predict([5.] * 96, bounds=[0., 10.])
+        np.testing.assert_allclose(captured[0][0, :96, 0], 0.501, atol=1e-6)
         np.testing.assert_allclose(captured[0][0, 96:, 0], .101, atol=1e-7)
-        np.testing.assert_allclose(prediction, 5.101, atol=1e-6)
+        np.testing.assert_allclose(prediction, 6.01, atol=1e-6)
+
+
+class ContextBoundaryTests(unittest.TestCase):
+    make_engine = PredictionPreprocessingTests.make_engine
+
+    def test_short_context_padding_and_long_context_truncation(self):
+        engine, captured = self.make_engine()
+        noise={'blr':np.zeros(256),'flow':np.zeros(352)}
+        engine.predict([1.,2.],bounds=[0.,4.],noise=noise)
+        np.testing.assert_allclose(captured[0][0,:95,0],.25)
+        self.assertAlmostEqual(float(captured[0][0,95,0]),.5)
+        captured.clear()
+        engine.predict(list(range(120)),bounds=[0.,120.],noise=noise)
+        np.testing.assert_allclose(captured[0][0,[0,95],0],[24/120,119/120],atol=1e-7)
+
+    def test_constant_custom_input_remains_finite_and_constant(self):
+        engine, captured = self.make_engine()
+        prediction=engine.predict([5.]*96,noise={'blr':np.ones(256),'flow':np.ones(352)})
+        np.testing.assert_array_equal(prediction,np.full(256,5.))
 
 
 if __name__ == '__main__':

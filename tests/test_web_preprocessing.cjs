@@ -37,7 +37,7 @@ async function makeEngine() {
   sandbox.window = sandbox;
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../web/js/engine-web.js'), 'utf8'), sandbox);
   const engine = sandbox.RegimeFlowWeb;
-  assert.equal(await engine.load({ backbone: 'backbone', condEncoder: 'condition' }), true);
+  assert.equal(await engine.load({ backbone: 'backbone', condEncoder: 'condition' }, { config: JSON.parse(fs.readFileSync(path.join(__dirname, '../web/models/inference-config.json'), 'utf8')) }), true);
   return { engine, captured };
 }
 
@@ -50,25 +50,25 @@ test('temporal statistics preserve uncentered context and denormalize forecast',
   const ctx = Array.from({ length: 96 }, (_, i) => i % 2 ? 4 : 0);
   const pred = await engine.predict(ctx, 0, 0, { deterministic: true });
   near(captured[0][0], 0);
-  near(captured[0][1], 2); // loc=2, scale=2, context is ctx/scale.
-  near(captured[0][96], 0);
+  near(captured[0][1], 1); // minmax first, then loc=.5 and scale=1.
+  near(captured[0][96], .5);
   assert.equal(pred.length, 256);
-  pred.forEach(value => near(value, 2));
+  pred.forEach(value => near(value, 4));
 });
 
 test('temporal standard deviation is clamped for small-amplitude contexts', async () => {
   const { engine, captured } = await makeEngine();
   const ctx = Array.from({ length: 96 }, (_, i) => i % 2 ? 3.5 : 3);
   const pred = await engine.predict(ctx, 0, 0, { deterministic: true });
-  near(captured[0][0], 3); // std=.25 is clamped to 1, not used directly.
-  near(captured[0][1], 3.5);
-  pred.forEach(value => near(value, 3.25));
+  near(captured[0][0], 0); // minmax [0,1], temporal std=.5 is clamped to 1.
+  near(captured[0][1], 1);
+  pred.forEach(value => near(value, 3.5));
 });
 
 test('additional flow noise is .001 while BLR noise remains .1', async () => {
   const { engine, captured } = await makeEngine();
-  const pred = await engine.predict(Array(96).fill(5), 0, 0);
-  near(captured[0][0], 5.001);
+  const pred = await engine.predict(Array(96).fill(5), 0, 0, { bounds: [0, 10] });
+  near(captured[0][0], 0.501);
   near(captured[0][96], .101);
-  pred.forEach(value => near(value, 5.101));
+  pred.forEach(value => near(value, 6.01));
 });
